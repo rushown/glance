@@ -25,7 +25,7 @@ const schema = z
     // whisper = any OpenAI-compatible /audio/transcriptions server (speaches/faster-whisper, whisper.cpp, Groq...)
     STT_PROVIDER: z.enum(['whisper', 'openai', 'deepgram', 'none']).default('whisper'),
     STT_API_KEY: z.string().optional().default(''),
-    STT_BASE_URL: z.string().url().default('http://localhost:8000/v1'),
+    STT_BASE_URL: z.string().url().default('http://127.0.0.1:8000/v1'),
     STT_MODEL: z.string().default('Systran/faster-whisper-small'),
     STT_LANGUAGE: z.string().default('en'),
 
