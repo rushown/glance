@@ -266,7 +266,8 @@ export class AiService {
       )
       for (const e of out?.chats ?? []) {
         const c = todo.find(x => x.id === e.id)
-        if (c && e.summary.trim()) this.triageCache.set(c.id, { key: `${c.lastDate}:${c.unread}`, value: { priority: e.priority, summary: truncate(e.summary, 48) } })
+        const summary = c ? stripSpeaker(e.summary, [c.title, c.lastFrom]) : ''
+        if (c && summary) this.triageCache.set(c.id, { key: `${c.lastDate}:${c.unread}`, value: { priority: e.priority, summary: truncate(summary, 48) } })
       }
     } catch (err) {
       this.log.warn({ err: (err as Error).message }, 'background triage failed; rules stay in place')
@@ -324,7 +325,7 @@ export class AiService {
     if (!this.cfg) return rules
     const key = `${chat.id}:${messages.at(-1)!.id}`
     const cached = this.draftCache.get(key)
-    if (cached) return { drafts: cached, source: 'model' }
+    if (cached) return { drafts: withRules(cached, rules.drafts), source: 'model' }
     const fromModel = this.structured(
       DraftsSchema,
       'drafts',
@@ -337,7 +338,8 @@ export class AiService {
       `<chat title="${chat.title}" kind="${chat.kind}">\n${messages.map(m => `${m.out ? 'Me' : m.from}: ${m.text}`).join('\n')}\n</chat>`,
     )
       .then(out => {
-        const drafts = [...new Set((out?.drafts ?? []).map(d => truncate(d.replace(/^["“]|["”]$/g, '').trim(), 60)).filter(Boolean))].slice(0, 3)
+        // Never truncate a draft: it would be sent with a dangling "…". Drop over-long ones instead.
+        const drafts = [...new Set((out?.drafts ?? []).map(d => d.replace(/^["“]|["”]$/g, '').trim()).filter(d => d && d.length <= 60))].slice(0, 3)
         if (drafts.length) {
           this.draftCache.set(key, drafts)
           if (this.draftCache.size > 200) this.draftCache.delete(this.draftCache.keys().next().value!)
@@ -350,8 +352,26 @@ export class AiService {
       })
     const timer = new Promise<null>(r => setTimeout(() => r(null), this.cfg!.fastMs).unref())
     const drafts = await Promise.race([fromModel, timer])
-    return drafts?.length ? { drafts, source: 'model' } : rules
+    return drafts?.length ? { drafts: withRules(drafts, rules.drafts), source: 'model' } : rules
   }
+}
+
+/** Keep at least two options: top up short model lists with rule-based drafts. */
+function withRules(model: string[], rules: string[]): string[] {
+  const out = [...model]
+  for (const r of rules) if (out.length < 2 && !out.includes(r)) out.push(r)
+  return out.slice(0, 3)
+}
+
+/** The inbox row already shows the chat name: drop a leading "Ali Hassan:" / "Jake:" from summaries. */
+export function stripSpeaker(summary: string, names: string[]): string {
+  let s = summary.trim()
+  for (const n of names.filter(Boolean)) {
+    for (const cand of [n, n.split(' ')[0]!]) {
+      if (cand && s.toLowerCase().startsWith(`${cand.toLowerCase()}:`)) s = s.slice(cand.length + 1).trim()
+    }
+  }
+  return s.replace(/^[A-Z][\p{L}]+:\s+/u, '').trim() || summary.trim()
 }
 
 /** Pull the JSON object out of a model reply (tolerates code fences or chatter around it). */

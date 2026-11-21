@@ -1,6 +1,6 @@
 import { pino } from 'pino'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { AiService, extractJson } from '../src/ai.js'
+import { AiService, extractJson, stripSpeaker } from '../src/ai.js'
 import type { Logger } from '../src/lib/logger.js'
 
 const log = pino({ level: 'silent' }) as unknown as Logger
@@ -105,5 +105,21 @@ describe('AiService (open models via OpenAI-compatible API)', () => {
     expect(extractJson('{"a":1}')).toEqual({ a: 1 })
     expect(extractJson('Here you go: {"a": 2} hope it helps')).toEqual({ a: 2 })
     expect(extractJson('nope')).toBeNull()
+  })
+
+  it('never truncates drafts (they would be sent with "…") and keeps at least two', async () => {
+    fakeLlm(() => ({ content: JSON.stringify({ drafts: ['Booked for 8!', 'I can book a table for 3 but you will need to cover the extra deposit for tonight'] }) }))
+    const ai = new AiService({ ...cfg, fastMs: 1000 }, log)
+    const { drafts, source } = await ai.drafts(chat, msgs)
+    expect(source).toBe('model')
+    expect(drafts[0]).toBe('Booked for 8!')
+    expect(drafts.every(d => !d.endsWith('…') && d.length <= 60)).toBe(true)
+    expect(drafts.length).toBeGreaterThanOrEqual(2)
+  })
+
+  it('strips the speaker from triage summaries', () => {
+    expect(stripSpeaker('Ali Hassan: Can you book a table for 3?', ['Ali Hassan', 'Ali Hassan'])).toBe('Can you book a table for 3?')
+    expect(stripSpeaker('Jake: approve the hotfix PR', ['Product Team', 'Jake'])).toBe('approve the hotfix PR')
+    expect(stripSpeaker('Asks you to book a table', ['Ali'])).toBe('Asks you to book a table')
   })
 })
