@@ -1,0 +1,11 @@
+node_modules/
+dist/
+data/
+.env
+.env.local
+.env.*.local
+.env.production
+*.ehpk
+app/app.json
+*.log
+.DS_Store
