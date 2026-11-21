@@ -176,9 +176,11 @@ export class AiService {
     const text = transcript.trim()
     if (!text) return unknown('I did not catch that')
     const fast = heuristicIntent(text, ctx)
-    if (fast.action !== 'unknown' || !this.enabled) return fast
+    if (fast.action !== 'unknown' || !this.cfg) return fast
     try {
-      const out = await this.structured(
+      // The glasses show "Thinking…" meanwhile; never keep the user waiting longer than this.
+      const deadline = new Promise<null>(r => setTimeout(() => r(null), Math.min(this.cfg!.timeoutMs, 20_000)).unref())
+      const out = await Promise.race([deadline, this.structured(
         IntentSchema,
         'intent',
         [
@@ -200,14 +202,15 @@ export class AiService {
           'Never invent recipients that were not spoken.',
         ].join('\n'),
         [
-          `<chats>\n${ctx.chats.map(c => `${c.title} (${c.kind})`).join('\n')}\n</chats>`,
+          `<chats>\n${ctx.chats.slice(0, 40).map(c => `${c.title} (${c.kind})`).join('\n')}\n</chats>`,
           ctx.currentChat
             ? `<open_chat title="${ctx.currentChat.title}">\n${ctx.currentChat.recent.map(m => `${m.from}: ${m.text}`).join('\n')}\n</open_chat>`
             : '<open_chat>none</open_chat>',
           `<transcript>${text}</transcript>`,
         ].join('\n\n'),
-      )
+      )])
       if (out) return normalizeIntent(out)
+      this.log.warn('model too slow for this command, using rules')
     } catch (err) {
       this.log.error({ err: (err as Error).message }, 'intent parsing failed, using heuristics')
     }
