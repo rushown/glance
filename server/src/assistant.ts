@@ -99,7 +99,7 @@ export class Assistant {
     if (pcm.length < 16_000 * 2 * 0.3) throw badRequest('Recording too short', 'too_short')
     if (pcm.length > MAX_PCM_BYTES) throw badRequest('Recording too long (max 60s)', 'too_long')
     if (pcmLevel(pcm) < 0.002) throw badRequest('Only silence was recorded', 'silence')
-    return this.stt.transcribe(pcm)
+    return this.ai.whileHolding(this.stt.transcribe(pcm))
   }
 
   async command(transcript: string, currentChatId?: string): Promise<CommandResult> {

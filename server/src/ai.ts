@@ -81,6 +81,7 @@ export class AiService {
   private jsonMode: 'schema' | 'object' = 'schema'
   private queue: { hi: Job<unknown>[]; lo: Job<unknown>[] } = { hi: [], lo: [] }
   private running: { priority: 'hi' | 'lo'; abort: AbortController } | null = null
+  private holds = 0
 
   constructor(
     cfg: LlmConfig | null,
@@ -109,8 +110,24 @@ export class AiService {
     })
   }
 
+  /**
+   * Pause background model work while `work` runs (e.g. speech-to-text on the
+   * same CPU), so the user's voice command isn't slowed down by inbox triage.
+   */
+  async whileHolding<T>(work: Promise<T>): Promise<T> {
+    this.holds++
+    if (this.running?.priority === 'lo') this.running.abort.abort(new Error('preempted'))
+    try {
+      return await work
+    } finally {
+      this.holds--
+      void this.pump()
+    }
+  }
+
   private async pump() {
     if (this.running) return
+    if (!this.queue.hi.length && this.holds > 0) return // background waits until voice work is done
     const priority = this.queue.hi.length ? 'hi' : 'lo'
     const job = this.queue[priority].shift()
     if (!job) return

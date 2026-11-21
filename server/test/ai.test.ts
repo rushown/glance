@@ -122,4 +122,18 @@ describe('AiService (open models via OpenAI-compatible API)', () => {
     expect(stripSpeaker('Jake: approve the hotfix PR', ['Product Team', 'Jake'])).toBe('approve the hotfix PR')
     expect(stripSpeaker('Asks you to book a table', ['Ali'])).toBe('Asks you to book a table')
   })
+
+  it('pauses background triage while speech-to-text runs', async () => {
+    const order: string[] = []
+    fakeLlm(b => { order.push(b.response_format.json_schema.name); return { content: '{"chats":[]}', delayMs: 10 } })
+    const ai = new AiService(cfg, log)
+    let finishStt!: () => void
+    const stt = ai.whileHolding(new Promise<void>(r => { finishStt = r }))
+    void ai.triage([chat])
+    await new Promise(r => setTimeout(r, 60))
+    expect(order).toEqual([]) // held
+    finishStt(); await stt
+    await new Promise(r => setTimeout(r, 60))
+    expect(order).toEqual(['triage'])
+  })
 })
