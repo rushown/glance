@@ -1,0 +1,39 @@
+# Glance server + free, open-source AI, all self-hosted:
+#   ollama  : open LLM (Qwen 2.5 3B by default) for triage, reply drafts, digests
+#   whisper : speaches / faster-whisper, OpenAI-compatible speech-to-text
+# CPU-only is fine; a GPU makes the model faster.
+services:
+  glance:
+    build: ./server
+    restart: unless-stopped
+    env_file: ./server/.env
+    environment:
+      DATA_DIR: /data
+      LLM_BASE_URL: ${LLM_BASE_URL:-http://ollama:11434/v1}
+      STT_BASE_URL: ${STT_BASE_URL:-http://whisper:8000/v1}
+    ports:
+      - "8787:8787"
+    volumes:
+      - glance-data:/data
+    depends_on:
+      - ollama
+      - whisper
+
+  ollama:
+    image: docker.io/ollama/ollama:latest
+    restart: unless-stopped
+    volumes:
+      - ollama-models:/root/.ollama
+    # Pull the model on first start (no-op afterwards).
+    entrypoint: ["/bin/sh", "-c", "ollama serve & sleep 3 && ollama pull ${LLM_MODEL:-qwen2.5:3b} && wait"]
+
+  whisper:
+    image: ghcr.io/speaches-ai/speaches:latest-cpu
+    restart: unless-stopped
+    volumes:
+      - whisper-models:/home/ubuntu/.cache/huggingface
+
+volumes:
+  glance-data:
+  ollama-models:
+  whisper-models:
