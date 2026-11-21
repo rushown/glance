@@ -417,6 +417,9 @@ export function heuristicIntent(text: string, ctx: CommandContext): Intent {
   if ((m = t.match(/^(?:tell|message|text|send)\s+(.+?)(?:\s+that|\s*[:,])\s+(.+)$/i))) {
     return { ...unknown(''), action: 'send_message', recipient_names: splitNames(m[1]!), message_text: capitalize(m[2]!) }
   }
+  if ((m = t.match(/^let\s+(.+?)\s+know\s+(?:that\s+)?(.+)$/i))) {
+    return { ...unknown(''), action: 'send_message', recipient_names: splitNames(m[1]!), message_text: capitalize(m[2]!) }
+  }
   // Spoken without "that": "tell Sara I saved her a seat". Find the longest leading name that is a chat.
   if ((m = t.match(/^(?:tell|message|text)\s+(.+)$/i))) {
     const words = m[1]!.split(/\s+/)
@@ -435,10 +438,17 @@ export function heuristicIntent(text: string, ctx: CommandContext): Intent {
   return unknown('Try "reply…", "tell Ali…" or "split 90 with Sara"')
 }
 
+/** Capitalize and fix the lower-case contractions speech-to-text often produces ("im", "dont"). */
 function capitalize(s: string) {
-  const x = s.trim()
+  const x = s
+    .trim()
+    .replace(/\bi\b/g, 'I')
+    .replace(/\b(i|you|we|they)m\b/gi, (_m, w: string) => `${w === 'i' ? 'I' : w}'m`)
+    .replace(/\bim\b/gi, "I'm")
+    .replace(/\b(don|can|won|isn|aren|didn|doesn|wasn|couldn|shouldn|wouldn)t\b/gi, "$1't")
   return x.charAt(0).toUpperCase() + x.slice(1)
 }
+
 
 export function heuristicTriage(c: Chat): Triage[string] {
   const text = c.lastText.toLowerCase()

@@ -38,7 +38,7 @@ describe('AiService (open models via OpenAI-compatible API)', () => {
     const calls = fakeLlm(() => ({
       content: '```json\n{"action":"send_message","recipient_names":["Ali Hassan"],"message_text":"Running 10 min late","amount":null,"currency":null,"include_self":true,"note":"","clarification":""}\n```',
     }))
-    const intent = await new AiService(cfg, log).parseCommand('let ally know im running ten late', ctx)
+    const intent = await new AiService(cfg, log).parseCommand('could you ping ally im running ten late', ctx)
     expect(intent).toMatchObject({ action: 'send_message', recipient_names: ['Ali Hassan'], message_text: 'Running 10 min late' })
     const c = calls[0]!
     expect(c.url).toBe('http://llm.local/v1/chat/completions')
@@ -46,7 +46,7 @@ describe('AiService (open models via OpenAI-compatible API)', () => {
     expect(c.body.response_format.type).toBe('json_schema')
     expect(c.body.response_format.json_schema.schema.required).toContain('action')
     expect(c.body.response_format.json_schema.schema.$schema).toBeUndefined()
-    expect(c.body.messages[1].content).toContain('<transcript>let ally know im running ten late</transcript>')
+    expect(c.body.messages[1].content).toContain('<transcript>could you ping ally im running ten late</transcript>')
     expect(c.headers.Authorization).toBeUndefined() // local servers need no key
   })
 
