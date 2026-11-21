@@ -75,6 +75,7 @@ export class AiService {
   private readonly cfg?: Required<LlmConfig>
   private triageCache = new Map<string, { key: string; value: Triage[string] }>()
   private draftCache = new Map<string, string[]>()
+  private digestCache = new Map<string, string>()
   private triagePending = new Set<string>()
   private jsonMode: 'schema' | 'object' = 'schema'
   private queue: { hi: Job<unknown>[]; lo: Job<unknown>[] } = { hi: [], lo: [] }
@@ -278,18 +279,29 @@ export class AiService {
     if (!items.length) return kind === 'channels' ? 'No new posts in your channels.' : 'Inbox zero. Nothing needs you right now.'
     const instructions =
       kind === 'channels'
-        ? 'Summarize the new posts in these Telegram channels and communities for a smart-glasses display. Keep only real news and decisions; skip promotions, shilling and spam (say "skipped promo" if a whole channel is noise). One short line per channel, format "Name: gist". Max 280 characters total. Plain text, no emoji.'
-        : 'Summarize these unread Telegram conversations for a smart-glasses display. Lead with what needs action. Use short lines separated by newlines, one per chat, format "Name: gist". Max 280 characters total. Plain text, no emoji.'
+        ? 'Summarize the new posts in these Telegram channels and communities for a smart-glasses display. Keep only real news and decisions; skip promotions, shilling and spam (say "skipped promo" if a whole channel is noise). One short line per channel, format "Name: gist". Max 280 characters total. Plain text, no emoji, no hashtags.'
+        : 'Summarize these unread Telegram conversations for a smart-glasses display. Lead with what needs action. Use short lines separated by newlines, one per chat, format "Name: gist". Say what each person asks for or tells the user; never state that something was done unless the message itself says it was done. Max 280 characters total. Plain text, no emoji.'
+    // Same unread messages → same digest, instantly (local models are slow on CPU).
+    const key = `${kind}|${items.map(i => `${i.chat.id}:${i.messages.at(-1)?.id ?? 0}`).join(',')}`
+    const cached = this.digestCache.get(key)
+    if (cached) return cached
     try {
       const out = await this.structured(
         DigestSchema,
         'digest',
         instructions,
+        // Keep the prompt short: the newest few messages per chat, each clipped.
         items
-          .map(i => `<chat title="${i.chat.title}">\n${i.messages.map(m => `${m.from}: ${m.text}`).join('\n')}\n</chat>`)
+          .map(i => `<chat title="${i.chat.title}">\n${i.messages.slice(-4).map(m => `${m.from}: ${truncate(m.text, 160)}`).join('\n')}\n</chat>`)
           .join('\n'),
       )
-      if (out?.digest.trim()) return truncate(out.digest, 400)
+      const clean = out?.digest.replace(/(^|\s)#[\p{L}\p{N}_]+/gu, '').replace(/[ \t]{2,}/g, ' ').trim()
+      if (clean) {
+        const digest = truncate(clean, 400)
+        this.digestCache.set(key, digest)
+        if (this.digestCache.size > 50) this.digestCache.delete(this.digestCache.keys().next().value!)
+        return digest
+      }
     } catch (err) {
       this.log.error({ err: (err as Error).message }, 'digest failed, using heuristics')
     }
