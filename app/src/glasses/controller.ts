@@ -66,7 +66,7 @@ export class Controller {
   private listeners = new Set<(s: ControllerState) => void>()
   private disposed = false
   /** Reply drafts are fetched as soon as a chat opens, so a tap shows them instantly. */
-  private drafts = new Map<string, { key: string; plans: Promise<Plan[]> }>()
+  private drafts = new Map<string, { key: string; at: number; plans: Promise<{ plans: Plan[]; source: 'model' | 'rules' }> }>()
 
   constructor(
     private readonly g: Glasses,
@@ -297,8 +297,11 @@ export class Controller {
   private prefetchDrafts(chatId: string, lastId: number) {
     const key = `${chatId}:${lastId}`
     if (this.drafts.get(chatId)?.key === key) return
-    const plans = this.api.drafts(chatId).then(r => r.plans, () => [] as Plan[])
-    this.drafts.set(chatId, { key, plans })
+    const plans = this.api.drafts(chatId).then(
+      r => ({ plans: r.plans, source: r.source ?? ('model' as const) }),
+      () => ({ plans: [] as Plan[], source: 'rules' as const }),
+    )
+    this.drafts.set(chatId, { key, at: Date.now(), plans })
   }
 
   private async openReply(chatId: string, title: string) {
@@ -312,7 +315,19 @@ export class Controller {
     const ready = await Promise.race([entry.plans.then(() => true), new Promise<boolean>(r => setTimeout(() => r(false), 150))])
     let token = this.workToken
     if (!ready) token = await this.working(back, 'Drafting replies…')
-    const plans = await entry.plans
+    let { plans, source } = await entry.plans
+    if (source === 'rules' && Date.now() - entry.at > 1500) {
+      // A slow local model may have finished since: the server answers instantly from its cache.
+      const fresh = await Promise.race([
+        this.api.drafts(chatId).catch(() => null),
+        new Promise<null>(r => setTimeout(() => r(null), 1500)),
+      ])
+      if (fresh?.plans.length) {
+        plans = fresh.plans
+        source = fresh.source ?? 'model'
+        this.drafts.set(chatId, { key: entry.key, at: Date.now(), plans: Promise.resolve({ plans, source }) })
+      }
+    }
     if (token !== this.workToken) return
     const last = this.lastIncoming.get(chatId)
     const context = last ? `${clip(last.from.split(' ')[0] ?? '', 12)}: ${clip(last.text, 96)}` : 'Pick a reply or speak your own'

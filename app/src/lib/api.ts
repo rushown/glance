@@ -61,10 +61,10 @@ export class Api {
       timeoutMs: 60_000,
     })
   command = (text: string, chatId?: string) =>
-    this.req<{ transcript: string; result: CommandResult }>('POST', '/api/command', { text, chatId }, { timeoutMs: 45_000 })
+    this.req<{ transcript: string; result: CommandResult }>('POST', '/api/command', { text, chatId }, { timeoutMs: 60_000 })
   execute = (planId: string) => this.req<{ title: string; body: string }>('POST', `/api/plans/${planId}/execute`, {}, { timeoutMs: 45_000 })
-  digest = (kind: 'inbox' | 'channels' = 'inbox') => this.req<{ body: string }>('GET', `/api/digest?kind=${kind}`, undefined, { timeoutMs: 45_000 })
-  drafts = (chatId: string) => this.req<{ plans: Plan[] }>('POST', `/api/chats/${encodeURIComponent(chatId)}/drafts`, {}, { timeoutMs: 30_000 })
+  digest = (kind: 'inbox' | 'channels' = 'inbox') => this.req<{ body: string }>('GET', `/api/digest?kind=${kind}`, undefined, { timeoutMs: 75_000 })
+  drafts = (chatId: string) => this.req<{ plans: Plan[]; source?: 'model' | 'rules' }>('POST', `/api/chats/${encodeURIComponent(chatId)}/drafts`, {}, { timeoutMs: 30_000 })
   chats = () => this.req<{ chats: ChatSummary[] }>('GET', '/api/chats', undefined, { timeoutMs: 30_000 })
   wallet = () => this.req<WalletInfo>('GET', '/api/wallet')
   payments = () => this.req<{ summary: string; requests: PaymentRequest[] }>('GET', '/api/payments')

@@ -146,4 +146,25 @@ describe('controller on a (fake) G2', () => {
     for (const p of pages) checkPage(p)
     c.dispose()
   })
+
+  it('swaps rule-based drafts for model drafts once the local model has caught up', async () => {
+    pages.length = 0
+    let calls = 0
+    const plan = (id: string, body: string) => ({ id, kind: 'send', title: 'Reply', body, targets: [{ chatId: '1000', title: 'x' }] })
+    const api = {
+      ...fakeApi,
+      drafts: async () => (++calls === 1 ? { plans: [plan('r1', 'Sounds good!')], source: 'rules' } : { plans: [plan('m1', 'Booked for 8, see you there')], source: 'model' }),
+    } as unknown as Api
+    const g = new (Glasses as any)(fakeBridge) as Glasses
+    const c = new Controller(g, api)
+    await c.start()
+    emit({ listEvent: { containerName: 'inbox', currentSelectItemIndex: 1 } }) // open chat → prefetch (rules)
+    await tick()
+    await new Promise(r => setTimeout(r, 1600)) // user reads for a moment
+    emit({ sysEvent: {} }) // tap → refetch hits the server cache
+    await tick()
+    expect(pages.at(-1)!.listObject[0].itemContainer.itemName[0]).toBe('Booked for 8, see you there')
+    expect(calls).toBe(2)
+    c.dispose()
+  })
 })
