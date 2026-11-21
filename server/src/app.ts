@@ -141,7 +141,7 @@ export async function buildApp(d: AppDeps): Promise<FastifyInstance> {
 
   app.post('/api/chats/:id/drafts', { config: { rateLimit: { max: 40, timeWindow: '1 minute' } } }, async req => {
     const { id } = z.object({ id: z.string().min(1).max(32) }).parse(req.params)
-    return { plans: await d.assistant.drafts(id) }
+    return d.assistant.draftsWithSource(id)
   })
 
   app.get('/api/chats/:id/messages', async req => {

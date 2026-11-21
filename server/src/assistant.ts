@@ -294,14 +294,19 @@ export class Assistant {
   // ── Reply drafts ──────────────────────────────────────────────────────
   /** AI-drafted replies for a chat, each held as a one-tap send plan. */
   async drafts(chatId: string): Promise<Plan[]> {
+    return (await this.draftsWithSource(chatId)).plans
+  }
+
+  async draftsWithSource(chatId: string): Promise<{ plans: Plan[]; source: 'model' | 'rules' }> {
     const chat = await this.tg.getChat(chatId)
     if (!chat) throw notFound('Chat not found')
-    if (chat.kind === 'channel') return []
+    if (chat.kind === 'channel') return { plans: [], source: 'rules' }
     const messages = await this.tg.getMessages(chatId, 10)
-    const { drafts: texts } = await this.ai.drafts(chat, messages)
-    return texts.map(text =>
+    const { drafts: texts, source } = await this.ai.drafts(chat, messages)
+    const plans = texts.map(text =>
       this.remember({ id: randomUUID(), kind: 'send', title: `Reply to ${chat.title}`, body: text, targets: [{ chatId, title: chat.title }], text }),
     )
+    return { plans, source }
   }
 
   // ── Info ──────────────────────────────────────────────────────────────

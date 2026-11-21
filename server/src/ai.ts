@@ -331,7 +331,7 @@ export class AiService {
         'You draft quick replies for someone reading Telegram on smart glasses. They approve one with a single tap, so each draft must be ready to send as-is.',
         'Write 2 or 3 distinct options that answer the latest incoming message(s): e.g. a yes, a no/later, and a specific helpful answer.',
         'Match the language, tone and formality of the conversation. Max 50 characters each. No emoji, no quotes, no sign-offs.',
-        "Never invent facts (times, places, amounts) the user has not stated; prefer \"I'll check\" style answers over guesses.",
+        "Never claim something is done (booked, paid, sent) unless the user already said so in the chat. Never invent times, places or amounts; prefer \"I'll check\" style answers over guesses.",
       ].join('\n'),
       `<chat title="${chat.title}" kind="${chat.kind}">\n${messages.map(m => `${m.out ? 'Me' : m.from}: ${m.text}`).join('\n')}\n</chat>`,
     )
