@@ -58,7 +58,7 @@ export interface LlmConfig {
   fastMs?: number
 }
 
-type Job<T> = { run: () => Promise<T>; resolve: (v: T) => void; reject: (e: unknown) => void }
+type Job<T> = { run: (signal: AbortSignal) => Promise<T>; resolve: (v: T) => void; reject: (e: unknown) => void; abort: AbortController }
 
 /**
  * Language understanding with any open model behind an OpenAI-compatible
@@ -78,7 +78,7 @@ export class AiService {
   private triagePending = new Set<string>()
   private jsonMode: 'schema' | 'object' = 'schema'
   private queue: { hi: Job<unknown>[]; lo: Job<unknown>[] } = { hi: [], lo: [] }
-  private busy = false
+  private running: { priority: 'hi' | 'lo'; abort: AbortController } | null = null
 
   constructor(
     cfg: LlmConfig | null,
@@ -98,24 +98,27 @@ export class AiService {
     return this.cfg?.model ?? null
   }
 
-  private enqueue<T>(run: () => Promise<T>, priority: 'hi' | 'lo'): Promise<T> {
+  private enqueue<T>(run: (signal: AbortSignal) => Promise<T>, priority: 'hi' | 'lo'): Promise<T> {
     return new Promise<T>((resolve, reject) => {
-      this.queue[priority].push({ run, resolve, reject } as Job<unknown>)
+      this.queue[priority].push({ run, resolve, reject, abort: new AbortController() } as Job<unknown>)
+      // Someone is waiting on the glasses: stop background work instead of queueing behind it.
+      if (priority === 'hi' && this.running?.priority === 'lo') this.running.abort.abort(new Error('preempted'))
       void this.pump()
     })
   }
 
   private async pump() {
-    if (this.busy) return
-    const job = this.queue.hi.shift() ?? this.queue.lo.shift()
+    if (this.running) return
+    const priority = this.queue.hi.length ? 'hi' : 'lo'
+    const job = this.queue[priority].shift()
     if (!job) return
-    this.busy = true
+    this.running = { priority, abort: job.abort }
     try {
-      job.resolve(await job.run())
+      job.resolve(await job.run(job.abort.signal))
     } catch (err) {
       job.reject(err)
     } finally {
-      this.busy = false
+      this.running = null
       void this.pump()
     }
   }
@@ -123,7 +126,11 @@ export class AiService {
   private async structured<S extends z.ZodType>(schema: S, name: string, system: string, user: string, priority: 'hi' | 'lo' = 'hi'): Promise<z.infer<S> | null> {
     const cfg = this.cfg
     if (!cfg) return null
-    return this.enqueue(async () => {
+    // The time limit covers waiting in the queue too.
+    const deadline = Date.now() + cfg.timeoutMs
+    return this.enqueue(async signal => {
+      const remaining = deadline - Date.now()
+      if (remaining < 1500) return null
       const { $schema: _ignored, ...jsonSchema } = z.toJSONSchema(schema) as Record<string, unknown>
       const call = (mode: 'schema' | 'object') =>
         fetch(`${cfg.baseUrl}/chat/completions`, {
@@ -140,7 +147,7 @@ export class AiService {
             ],
             response_format: mode === 'schema' ? { type: 'json_schema', json_schema: { name, schema: jsonSchema, strict: true } } : { type: 'json_object' },
           }),
-          signal: AbortSignal.timeout(cfg.timeoutMs),
+          signal: AbortSignal.any([signal, AbortSignal.timeout(remaining)]),
         })
       let res = await call(this.jsonMode)
       if (res.status === 400 && this.jsonMode === 'schema') {
