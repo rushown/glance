@@ -17,6 +17,10 @@ describe('spoken commands (rules)', () => {
     expect(heuristicIntent('let sara know im running about ten minutes late', ctx)).toMatchObject({ action: 'send_message', recipient_names: ['sara'], message_text: "I'm running about ten minutes late" })
     expect(heuristicIntent('Let Ali know that I dont have the keys', ctx).message_text).toBe("I don't have the keys")
   })
+  it('accepts one-letter spelling variants from speech-to-text', () => {
+    expect(heuristicIntent('Tell Sarah I saved her a seat.', ctx)).toMatchObject({ action: 'send_message', recipient_names: ['Sarah'], message_text: 'I saved her a seat' })
+    expect(matchChats(chats, 'Sarah')[0]!.chat.title).toBe('Sara Khan')
+  })
   it('treats gram(s) as TON (Toncoin was renamed Gram)', () => {
     expect(heuristicIntent('split 240 grams with Ali and Sara for dinner', ctx)).toMatchObject({ action: 'split_bill', amount: 240, currency: 'TON' })
   })

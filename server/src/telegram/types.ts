@@ -88,8 +88,11 @@ export function matchChats(chats: Chat[], spoken: string): Array<{ chat: Chat; s
     else if (title.split(' ').some(w => w === q)) score = 0.75
     else if (title.includes(q) || (user && user.includes(q))) score = 0.6
     else {
-      const d = levenshtein(title.split(' ')[0] ?? '', q)
-      if (q.length >= 3 && d <= Math.max(1, Math.floor(q.length / 4))) score = 0.5
+      const first = title.split(' ')[0] ?? ''
+      const d = levenshtein(first, q)
+      // One-letter spelling variants are what speech-to-text produces most (Sarah/Sara, Jon/John).
+      if (q.length >= 4 && d === 1) score = 0.8
+      else if (q.length >= 3 && d <= Math.max(1, Math.floor(q.length / 4))) score = 0.5
     }
     if (score > 0) out.push({ chat, score: chat.kind === 'user' ? score : score - 0.05 })
   }
