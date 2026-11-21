@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { fetchRetry } from './lib/http.js'
 import type { Logger } from './lib/logger.js'
 import { type Chat, matchChats, type Message } from './telegram/types.js'
 
@@ -134,7 +135,7 @@ export class AiService {
       if (remaining < 1500) return null
       const { $schema: _ignored, ...jsonSchema } = z.toJSONSchema(schema) as Record<string, unknown>
       const call = (mode: 'schema' | 'object') =>
-        fetch(`${cfg.baseUrl}/chat/completions`, {
+        fetchRetry(`${cfg.baseUrl}/chat/completions`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', ...(cfg.apiKey ? { Authorization: `Bearer ${cfg.apiKey}` } : {}) },
           body: JSON.stringify({

@@ -1,3 +1,4 @@
+import { fetchRetry } from './lib/http.js'
 import type { Config } from './config.js'
 
 export const SAMPLE_RATE = 16_000
@@ -53,7 +54,7 @@ class OpenAiCompatibleStt implements SttProvider {
     form.append('model', this.cfg.STT_MODEL)
     if (this.cfg.STT_LANGUAGE) form.append('language', this.cfg.STT_LANGUAGE)
     form.append('response_format', 'json')
-    const res = await fetch(`${this.cfg.STT_BASE_URL.replace(/\/$/, '')}/audio/transcriptions`, {
+    const res = await fetchRetry(`${this.cfg.STT_BASE_URL.replace(/\/$/, '')}/audio/transcriptions`, {
       method: 'POST',
       // Local servers need no key; hosted ones (Groq, OpenAI) do.
       headers: this.cfg.STT_API_KEY ? { Authorization: `Bearer ${this.cfg.STT_API_KEY}` } : {},
@@ -76,7 +77,7 @@ class OpenAiCompatibleStt implements SttProvider {
   private async download(): Promise<boolean> {
     this.downloaded = true
     try {
-      const res = await fetch(`${this.cfg.STT_BASE_URL.replace(/\/$/, '')}/models/${this.cfg.STT_MODEL}`, {
+      const res = await fetchRetry(`${this.cfg.STT_BASE_URL.replace(/\/$/, '')}/models/${this.cfg.STT_MODEL}`, {
         method: 'POST',
         headers: this.cfg.STT_API_KEY ? { Authorization: `Bearer ${this.cfg.STT_API_KEY}` } : {},
         signal: AbortSignal.timeout(15 * 60_000),
@@ -91,7 +92,7 @@ class OpenAiCompatibleStt implements SttProvider {
     // Only local servers: hosted APIs (Groq, OpenAI) have their models already.
     if (this.cfg.STT_API_KEY) return
     try {
-      const res = await fetch(`${this.cfg.STT_BASE_URL.replace(/\/$/, '')}/models`, { signal: AbortSignal.timeout(5000) })
+      const res = await fetchRetry(`${this.cfg.STT_BASE_URL.replace(/\/$/, '')}/models`, { signal: AbortSignal.timeout(5000) })
       if (!res.ok) return
       const json = (await res.json()) as { data?: Array<{ id: string }> }
       if (!json.data?.some(m => m.id === this.cfg.STT_MODEL)) await this.download()
@@ -107,7 +108,7 @@ class DeepgramStt implements SttProvider {
   async transcribe(pcm: Buffer): Promise<string> {
     const model = /whisper/i.test(this.cfg.STT_MODEL) ? 'nova-3' : this.cfg.STT_MODEL
     const q = new URLSearchParams({ model, smart_format: 'true', punctuate: 'true', language: this.cfg.STT_LANGUAGE || 'en' })
-    const res = await fetch(`https://api.deepgram.com/v1/listen?${q}`, {
+    const res = await fetchRetry(`https://api.deepgram.com/v1/listen?${q}`, {
       method: 'POST',
       headers: { Authorization: `Token ${this.cfg.STT_API_KEY}`, 'Content-Type': 'audio/wav' },
       body: new Uint8Array(pcmToWav(pcm)),
