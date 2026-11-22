@@ -260,7 +260,7 @@ export function mountPhoneUi(root: HTMLElement, d: PhoneDeps) {
     $(root, '#todo').textContent = open ? String(open) : ''
     $(root, '#specs').innerHTML = status
       ? `<div><dt>AI</dt><dd>${status.ai ? `${esc(status.ai)} (open model)` : 'Rules only (set LLM_BASE_URL)'}</dd></div>
-         <div><dt>Voice</dt><dd>${status.stt ? esc(status.stt) : 'Off (set STT_API_KEY)'}</dd></div>
+         <div><dt>Voice</dt><dd>${status.stt ? esc(status.stt) : 'Off (set STT_BASE_URL)'}</dd></div>
          <div><dt>TON</dt><dd>${status.ton.network}</dd></div>
          <div><dt>Server</dt><dd class="mono">v${esc(status.version)}</dd></div>`
       : ''
