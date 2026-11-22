@@ -2,6 +2,8 @@
 
 **Read, reply and split the bill without taking your phone out.**
 
+**[▶ Try the live demo](https://useglanceapp.pages.dev)** (runs in your browser, no install) · Demo video: _add link_ · Built for the DoraHacks *Heads Up: Even Realities* hackathon
+
 Glance is an Even Hub app for Even Realities G2 glasses. It turns your real Telegram account into a heads-up inbox ranked by urgency. You can reply with one tap by approving an AI-drafted reply, or say your own. All AI is **free and open source, running on your own server**: an open LLM through Ollama and Whisper for speech. No paid AI API is needed. It also lets you split a bill with friends in TON in one sentence: each friend gets a payment link in Telegram, Glance watches the chain, and **PAID** appears on your glasses when the money arrives.
 
 > **Track:** 01 · Messaging & News (Telegram), also entered for **Best Telegram integration**.
@@ -30,6 +32,25 @@ Glance is an Even Hub app for Even Realities G2 glasses. It turns your real Tele
 
 **Safety rules:** nothing is ever sent without an explicit confirmation on the glasses. Plans are stored on the server and can be used only once, so a double-tap can't send twice and the client can't change recipients or amounts.
 
+## Project layout
+
+```
+glance/
+├── app/                    Even Hub plugin + phone UI (TypeScript, Vite)
+│   ├── src/glasses/        glasses state machine (inbox, chat, drafts, confirm, voice)
+│   ├── src/phone/          phone companion UI: HUD mirror, touchpad, payments, focus chats, setup
+│   ├── src/lib/            API client, BLE wrapper, VAD recorder, G2 text limits
+│   └── src/demo/           web demo: runs the server's modules in the browser when no server is set
+├── server/                 Fastify API (Node 22)
+│   ├── src/telegram/       live (gramjs MTProto) and mock Telegram
+│   ├── src/ai.ts           open-LLM triage, drafts, intents, digests + rule fallbacks
+│   ├── src/assistant.ts    commands, plans (confirm-before-send), bill splitting
+│   ├── src/payments.ts     payment requests + on-chain matcher
+│   ├── src/ton.ts          rates, ton:// links, toncenter
+│   └── src/stt.ts          Whisper / OpenAI-compatible speech-to-text
+└── docker-compose.yml      server + Ollama + Whisper
+```
+
 ## Architecture
 
 ```
@@ -46,6 +67,26 @@ Glance is an Even Hub app for Even Realities G2 glasses. It turns your real Tele
 
 - **app/**: Even Hub plugin (TypeScript + Vite, `@evenrealities/even_hub_sdk` 0.0.16). It serializes every BLE call with a timeout, mirrors every frame to the phone, and runs a full **emulator** in a desktop browser (keyboard + browser mic).
 - **server/**: Fastify API, single-tenant (your own server for your own Telegram account). API keys and the Telegram session never leave it.
+
+## Web demo (nothing to install)
+
+**<https://useglanceapp.pages.dev>**: the glasses emulator and phone UI side by side. Use the arrow buttons, **Tap** and **Double tap** under the glasses display, or type a command such as *"Split 240 dirhams with Ali and Sara for dinner"*. About 10 seconds after you send a request, the demo friends reply and pay.
+
+The hosted page runs in **demo mode** when no server is connected. The real server code (assistant, rule-based triage and drafts, sample Telegram chats, TON payment links with live rates) runs inside your browser, and a banner marks it as a demo. Voice, open-LLM replies and your own Telegram account need a Glance server: run one locally (below) or deploy it, then enter its URL under **Setup**. To build the static site:
+
+```bash
+cd app
+VITE_SERVER_URL= VITE_APP_TOKEN= npx vite build   # keep both empty: the build is public
+# upload dist/ to Cloudflare Pages (Workers & Pages → Create → Pages → Upload assets) or any static host
+```
+
+| | Web demo | Your own server |
+|---|---|---|
+| Chats | Built-in sample chats | Your real Telegram account (MTProto) |
+| Triage and reply drafts | Rules | Open LLM (Ollama), with rules as a fallback |
+| Voice | Not available | Whisper speech-to-text |
+| Payments | Live TON rate, `ton://` links on testnet, demo friends "pay" | Real on-chain matching against your wallet |
+| Runs on | Your browser | Your machine or VPS |
 
 ## Quick start: demo mode (no accounts needed, ~2 minutes)
 
@@ -82,12 +123,24 @@ In the emulator, **↑ ↓** scroll, **Enter** taps, **Esc** double-taps and **S
    ```
    Install it as a private build on your glasses, then submit for review in the Even Hub portal.
 
-### Where to host (and why not Vercel)
+### Where to host
 
-| Part | Vercel? | Use instead |
+| Part | Host | Notes |
 |---|---|---|
-| `app/` (static) | ✅ Works, handy as a browser demo for judges | Inside the Even App it is packaged as `.ehpk` anyway |
-| `server/` | ❌ Needs a permanent Telegram connection, a live update stream, a background chain watcher, and disk storage for the session. Serverless functions are short-lived with no persistent disk | **Railway, Fly.io, Render** or any VPS with the included Dockerfile (needs a persistent volume at `/data`) |
+| `app/` (static) | **Cloudflare Pages**, Vercel, Netlify, any static host | Without a server it runs as the web demo. On the glasses it ships as `.ehpk` |
+| `server/` | **A VPS** (Docker or plain Node 22), Railway, Fly.io, Render | Needs a long-lived process: a permanent Telegram connection, a live event stream, a chain watcher, and a persistent `/data` folder. Serverless functions don't fit |
+| Ollama + Whisper | The same machine (about 4 GB RAM on CPU), or any OpenAI-compatible endpoint | Set `LLM_BASE_URL` and `STT_BASE_URL` |
+
+**HTTPS with Cloudflare Tunnel** (no open ports):
+
+```bash
+cloudflared tunnel login
+cloudflared tunnel create glance
+cloudflared tunnel route dns glance api.yourdomain.com
+cloudflared tunnel run --url http://127.0.0.1:8787 glance
+```
+
+Use a *named* tunnel on your own domain. Free quick tunnels (`*.trycloudflare.com`) buffer server-sent events, so live alerts never arrive, and their URL changes on every restart, which breaks the `.ehpk` network whitelist. The server sends a keep-alive every 20 s, which stays under Cloudflare's 100 s idle timeout.
 
 ## Controls on the glasses
 
@@ -115,8 +168,8 @@ A typical reply takes three taps: open the chat, pick a draft, tap **Send**. Not
 ## Tests
 
 ```bash
-cd server && npm test     # 31 tests: API end-to-end, split → on-chain match, drafts, focus chats, channel digest, balance
-cd app && npm test        # 13 tests: every glasses page validated with the SDK's own validator, 63-byte limits, emoji, VAD
+cd server && npm test     # 44 tests: API end-to-end, split → on-chain match, drafts, focus chats, channel digest, balance
+cd app && npm test        # 14 tests: every glasses page validated with the SDK's own validator, 63-byte limits, emoji, VAD
 
 # Official simulator, scriptable (screenshots of the real 576×288 framebuffer):
 cd app && npx evenhub-simulator http://localhost:5173 --automation-port 9898
@@ -126,7 +179,7 @@ curl 127.0.0.1:9898/api/screenshot/glasses -o glasses.png
 
 ## Demo-video script (under 3 minutes, Even Hub simulator)
 
-Record the simulator window next to the phone UI (`npm run simulate` + `http://localhost:5173`).
+Record the simulator window next to the phone UI (`npm run simulate` + `http://localhost:5173`). For the parts that need no server, the live web demo at <https://useglanceapp.pages.dev> works too.
 
 1. **0:00 Problem (15 s).** "I check Telegram 80 times a day. Most of the time I need one line, not my phone."
 2. **0:15 Inbox (25 s).** The glasses open on a triaged inbox: urgent first, with one line per chat. A new message flashes in the header.
@@ -139,7 +192,7 @@ Record the simulator window next to the phone UI (`npm run simulate` + `http://l
 ## Prior work and hackathon rules
 
 - A first prototype of Glance (server, glasses controller and phone UI) was written on **Nov 19–21, 2026, before build week (Nov 23)**, as allowed by the rules ("say in your README what existed before Nov 23"). Every commit dated before Nov 23 is that pre-existing work. Everything after it was built during the hackathon, commit by commit.
-- Open-source libraries used: gramjs (Telegram MTProto), Fastify, zod, @ton/core, Even Hub SDK, CLI and simulator. Open models: Qwen 2.5 via Ollama, Whisper via speaches / faster-whisper.
+- Open-source libraries used: gramjs (Telegram MTProto), Fastify, zod, @ton/core, buffer, Even Hub SDK, CLI and simulator. Open models: Qwen 2.5 via Ollama, Whisper via speaches / faster-whisper.
 - Only apps listed in the entered track are used: **Telegram**. The AI is self-hosted open source (Ollama + Whisper), not a third-party app. Payments use the wallet-agnostic `ton://` standard, so they open Gram Wallet.
 - Money safety: testnet by default, read-only balance, and no custody. Glance only asks friends to pay *your own* wallet. No API keys are in the repo (`.env` files are git-ignored).
 

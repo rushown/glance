@@ -19,7 +19,8 @@ Anyone who lives in Telegram: founders and teams on work groups, crypto communit
 
 ## Links
 
-- Repository: see README for setup. Demo mode needs no accounts: `npm run dev` in `server/` and `app/`.
+- **Live demo:** <https://useglanceapp.pages.dev> runs in the browser with sample chats, rule-based AI and testnet payment links. It is marked as a demo. Connect your own server under Setup for real Telegram, the open LLM and voice.
+- Repository: see README for setup. Local demo mode needs no accounts: `npm run dev` in `server/` and `app/`.
 - Demo video: _add link_
 - Packaged build: `app/glance.ehpk` (`npm run pack`)
 
