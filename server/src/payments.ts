@@ -3,6 +3,7 @@ import type { EventHub } from './lib/events.js'
 import type { Logger } from './lib/logger.js'
 import type { JsonStore } from './lib/store.js'
 import { nanoToTon, type TonCenter } from './ton.js'
+import { unref } from './lib/timers.js'
 
 export type PaymentStatus = 'pending' | 'paid' | 'cancelled'
 
@@ -93,7 +94,7 @@ export class PaymentService {
 
   start() {
     this.timer = setInterval(() => void this.poll(), this.pollMs)
-    this.timer.unref()
+    unref(this.timer)
   }
 
   stop() {

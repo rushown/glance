@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import { fetchRetry } from './lib/http.js'
 import type { Logger } from './lib/logger.js'
+import { unref } from './lib/timers.js'
 import { type Chat, matchChats, type Message } from './telegram/types.js'
 
 // ── Schemas ─────────────────────────────────────────────────────────────
@@ -198,7 +199,7 @@ export class AiService {
     if (fast.action !== 'unknown' || !this.cfg) return fast
     try {
       // The glasses show "Thinking…" meanwhile; never keep the user waiting longer than this.
-      const deadline = new Promise<null>(r => setTimeout(() => r(null), Math.min(this.cfg!.timeoutMs, 20_000)).unref())
+      const deadline = new Promise<null>(r => unref(setTimeout(() => r(null), Math.min(this.cfg!.timeoutMs, 20_000))))
       const out = await Promise.race([deadline, this.structured(
         IntentSchema,
         'intent',
@@ -367,7 +368,7 @@ export class AiService {
         this.log.warn({ err: (err as Error).message }, 'drafts failed, using heuristics')
         return [] as string[]
       })
-    const timer = new Promise<null>(r => setTimeout(() => r(null), this.cfg!.fastMs).unref())
+    const timer = new Promise<null>(r => unref(setTimeout(() => r(null), this.cfg!.fastMs)))
     const drafts = await Promise.race([fromModel, timer])
     return drafts?.length ? { drafts: withRules(drafts, rules.drafts), source: 'model' } : rules
   }

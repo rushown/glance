@@ -1,5 +1,6 @@
 import { EventEmitter } from 'node:events'
 import type { Chat, IncomingMessage, Message, TelegramService, TelegramStatus } from './types.js'
+import { unref } from '../lib/timers.js'
 
 const now = () => Math.floor(Date.now() / 1000)
 
@@ -115,7 +116,7 @@ export class MockTelegram implements TelegramService {
       this.timers.delete(t)
       this.receive(chat.id, reply)
     }, 6000)
-    t.unref()
+    unref(t)
     this.timers.add(t)
   }
   async requestCode() {}
