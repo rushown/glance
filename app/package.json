@@ -14,7 +14,8 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@evenrealities/even_hub_sdk": "^0.0.16"
+    "@evenrealities/even_hub_sdk": "^0.0.16",
+    "buffer": "^6.0.3"
   },
   "devDependencies": {
     "@evenrealities/evenhub-cli": "^0.2.0",

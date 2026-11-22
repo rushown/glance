@@ -6,6 +6,11 @@ export class ApiError extends Error {
   }
 }
 
+type DemoBackend = import('../demo/backend').DemoBackend
+let demoBackend: Promise<DemoBackend> | undefined
+/** The in-browser demo backend, loaded only when no server is set. */
+const loadDemo = () => (demoBackend ??= import('../demo/backend').then(m => new m.DemoBackend()))
+
 export interface ApiConfig {
   baseUrl: string
   token: string
@@ -15,8 +20,13 @@ export interface ApiConfig {
 export class Api {
   constructor(private cfg: ApiConfig) {}
 
+  /** No server set: run on the built-in web demo (sample chats, rule-based AI, in the browser). */
+  get demo() {
+    return !this.cfg.baseUrl
+  }
+
   get configured() {
-    return Boolean(this.cfg.baseUrl && this.cfg.token)
+    return this.demo || Boolean(this.cfg.baseUrl && this.cfg.token)
   }
 
   get config(): ApiConfig {
@@ -29,6 +39,11 @@ export class Api {
 
   private async req<T>(method: string, path: string, body?: unknown, opts: { timeoutMs?: number; raw?: BodyInit } = {}): Promise<T> {
     if (!this.configured) throw new ApiError(0, 'not_configured', 'Server not configured')
+    if (this.demo) {
+      const res = await (await loadDemo()).handle(method, path, body)
+      if (res.status >= 400) throw new ApiError(res.status, String(res.json.error ?? 'error'), String(res.json.message ?? `HTTP ${res.status}`))
+      return res.json as T
+    }
     let res: Response
     try {
       res = await fetch(`${this.cfg.baseUrl}${path}`, {
@@ -82,6 +97,16 @@ export class Api {
   /** Live server events. Reconnects automatically; returns a disposer. */
   events(onEvent: (e: ServerEvent) => void, onState?: (connected: boolean) => void): () => void {
     if (!this.configured) return () => {}
+    if (this.demo) {
+      let stop: (() => void) | undefined
+      let stopped = false
+      void loadDemo().then(b => {
+        if (stopped) return
+        stop = b.subscribe(onEvent)
+        onState?.(true)
+      })
+      return () => { stopped = true; stop?.() }
+    }
     let es: EventSource | null = null
     let stopped = false
     let retry: ReturnType<typeof setTimeout> | undefined

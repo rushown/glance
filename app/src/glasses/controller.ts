@@ -398,7 +398,9 @@ export class Controller {
   private async startListening(back: Back, viaHold: boolean) {
     if (this.screen.name === 'listening' || this.screen.name === 'working') return
     if (this.status && !this.status.stt) {
-      return this.show({ name: 'info', title: 'Voice unavailable', pages: ['Speech-to-text is not configured on the server.\nSet STT_API_KEY in the server .env.'], page: 0, back })
+      return this.show({ name: 'info', title: 'Voice unavailable', pages: [this.api.demo
+        ? 'Voice needs Whisper on a Glance server.\nIn this web demo, type a command\non the phone instead.'
+        : 'Speech-to-text is not configured on the server.\nSet STT_BASE_URL in the server .env.'], page: 0, back })
     }
     const chatId = back.name === 'chat' ? back.chatId : undefined
     this.recorder.start()

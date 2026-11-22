@@ -55,6 +55,12 @@ export function mountPhoneUi(root: HTMLElement, d: PhoneDeps) {
       <p class="conn" id="conn"><span class="dot"></span><span id="conn-text">Starting</span></p>
     </header>
 
+    <aside class="demo-banner" id="demo-banner" role="note" hidden>
+      <span class="demo-tag">Demo</span>
+      <p><b>This is a demo.</b> It runs entirely in your browser with sample chats and rule-based replies. No Telegram account, no AI model, no real money.
+      For the real thing, run Glance locally with free open LLM models (Ollama + Whisper), or deploy the server and connect it under <button type="button" class="link" id="demo-setup">Setup</button>.</p>
+    </aside>
+
     <div class="cols">
       <section class="stage" aria-label="Glasses">
         <figure class="lens">
@@ -110,7 +116,7 @@ export function mountPhoneUi(root: HTMLElement, d: PhoneDeps) {
             <li class="step" id="step-server">
               <div class="step-head"><span class="num">1</span><h3>Server</h3><span class="state" id="server-state"></span></div>
               <form id="server" class="fields">
-                <input name="url" type="url" placeholder="https://glance.example.com" spellcheck="false" aria-label="Server URL" />
+                <input name="url" type="url" placeholder="https://glance.example.com (empty = web demo)" spellcheck="false" aria-label="Server URL" />
                 <input name="token" type="password" placeholder="Access token (APP_TOKEN)" aria-label="Access token" />
                 <button class="primary">Connect</button>
               </form>
@@ -218,6 +224,10 @@ export function mountPhoneUi(root: HTMLElement, d: PhoneDeps) {
     try { localStorage.setItem('glance.tab', t) } catch { /* private mode */ }
   }
   for (const b of tabs) b.addEventListener('click', () => showTab(b.dataset.tab as Tab))
+  $(root, '#demo-setup').addEventListener('click', () => {
+    showTab('setup')
+    $(root, '#step-server').scrollIntoView({ behavior: 'smooth', block: 'center' })
+  })
 
   // ── Snackbar + guarded actions ───────────────────────────────────────
   const snack = $(root, '#snack')
@@ -242,7 +252,8 @@ export function mountPhoneUi(root: HTMLElement, d: PhoneDeps) {
   }
   const renderSetup = () => {
     const tg = status?.telegram
-    setState('server-state', Boolean(status), status ? 'Connected' : d.api.configured ? 'Unreachable' : 'Not set')
+    $(root, '#demo-banner').hidden = !d.api.demo
+    setState('server-state', Boolean(status), d.api.demo ? 'Web demo' : status ? 'Connected' : d.api.configured ? 'Unreachable' : 'Not set')
     setState('tg-state', tg?.state === 'ready', !tg ? '—' : tg.mode === 'mock' ? 'Demo account' : tg.state === 'ready' ? 'Signed in' : 'Sign in')
     setState('wallet-state', Boolean(settings?.walletAddress), settings?.walletAddress ? short(settings.walletAddress) : 'Not set')
     const open = [!status, tg?.state !== 'ready', !settings?.walletAddress].filter(Boolean).length
@@ -263,6 +274,10 @@ export function mountPhoneUi(root: HTMLElement, d: PhoneDeps) {
     for (const f of Object.values(tgForms)) f.hidden = true
     tgLogout.hidden = true
     if (!t) { line.textContent = 'Connect the server first.'; return }
+    if (t.mode === 'mock' && d.api.demo) {
+      line.innerHTML = 'Web demo with sample chats. Connect your own Glance server above to sign in with your Telegram account.'
+      return
+    }
     if (t.mode === 'mock') {
       line.innerHTML = 'Running on built-in demo chats. Set <code>TELEGRAM_MODE=live</code> with your API ID and hash on the server to use your own account.'
       return
