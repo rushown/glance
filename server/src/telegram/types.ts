@@ -37,6 +37,11 @@ export interface TelegramStatus {
   passwordHint?: string
 }
 
+/** A message found by search, with the chat it came from. */
+export interface FoundMessage extends Message {
+  chatTitle: string
+}
+
 export interface IncomingMessage {
   chat: Chat
   message: Message
@@ -51,6 +56,12 @@ export interface TelegramService {
   getMessages(chatId: string, limit: number): Promise<Message[]>
   sendMessage(chatId: string, text: string): Promise<Message>
   markRead(chatId: string): Promise<void>
+  /** The user's Telegram "Saved Messages": their own notes, oldest first. */
+  getNotes(limit: number): Promise<Message[]>
+  /** Save a note to "Saved Messages". */
+  saveNote(text: string): Promise<Message>
+  /** Telegram's own search across all chats, newest first. */
+  search(query: string, limit: number): Promise<FoundMessage[]>
   onMessage(fn: (m: IncomingMessage) => void): () => void
   // Interactive login (live mode only; mock resolves immediately)
   requestCode(phone: string): Promise<void>

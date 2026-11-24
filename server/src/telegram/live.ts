@@ -5,7 +5,7 @@ import { StringSession } from 'telegram/sessions/index.js'
 import type { Dialog } from 'telegram/tl/custom/dialog.js'
 import type { Logger } from '../lib/logger.js'
 import type { JsonStore } from '../lib/store.js'
-import type { Chat, ChatKind, IncomingMessage, Message, TelegramService, TelegramStatus } from './types.js'
+import type { Chat, ChatKind, FoundMessage, IncomingMessage, Message, TelegramService, TelegramStatus } from './types.js'
 
 export interface SessionData {
   telegramSession: string
@@ -191,6 +191,43 @@ export class LiveTelegram implements TelegramService {
     const cached = this.chatCache.get(chatId)
     if (cached) cached.unread = 0
     this.invalidateDialogs()
+  }
+
+  async getNotes(limit: number): Promise<Message[]> {
+    this.requireReady()
+    const msgs = await this.client.getMessages('me', { limit })
+    return msgs
+      .filter(m => describeMessage(m))
+      .map(m => ({ id: m.id, chatId: 'me', from: 'You', out: true, text: describeMessage(m), date: m.date }))
+      .reverse()
+  }
+
+  async saveNote(text: string): Promise<Message> {
+    this.requireReady()
+    const m = await this.client.sendMessage('me', { message: text, linkPreview: false })
+    return { id: m.id, chatId: 'me', from: 'You', out: true, text, date: m.date }
+  }
+
+  async search(query: string, limit: number): Promise<FoundMessage[]> {
+    this.requireReady()
+    if (!query.trim()) return []
+    // No chat given: gramjs runs Telegram's global search (messages.searchGlobal).
+    const msgs = await this.client.getMessages(undefined, { search: query, limit })
+    const out: FoundMessage[] = []
+    for (const m of msgs) {
+      const text = describeMessage(m)
+      if (!text) continue
+      const chatId = m.chatId?.toString() ?? ''
+      let chatTitle = this.chatCache.get(chatId)?.title ?? ''
+      if (!chatTitle) {
+        try {
+          const c = (await m.getChat()) as Api.User | Api.Chat | Api.Channel | undefined
+          chatTitle = c ? ('title' in c && c.title) || ('firstName' in c ? [c.firstName, c.lastName].filter(Boolean).join(' ') : '') || '' : ''
+        } catch { /* title is cosmetic */ }
+      }
+      out.push({ id: m.id, chatId, from: m.out ? 'You' : await senderName(m), out: Boolean(m.out), text, date: m.date, chatTitle: chatTitle || 'Telegram' })
+    }
+    return out
   }
 
   onMessage(fn: (m: IncomingMessage) => void) {

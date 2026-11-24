@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events'
-import type { Chat, IncomingMessage, Message, TelegramService, TelegramStatus } from './types.js'
+import type { Chat, FoundMessage, IncomingMessage, Message, TelegramService, TelegramStatus } from './types.js'
 import { unref } from '../lib/timers.js'
 
 const now = () => Math.floor(Date.now() / 1000)
@@ -13,11 +13,13 @@ export class MockTelegram implements TelegramService {
   private readonly emitter = new EventEmitter()
   private chats = new Map<string, Chat>()
   private messages = new Map<string, Message[]>()
+  private notes: Message[] = []
   private seq = 1000
   private timers = new Set<NodeJS.Timeout>()
 
   constructor(private readonly opts: { autoReplies?: boolean } = {}) {
     this.seed()
+    this.seedNotes()
   }
 
   private seed() {
@@ -65,6 +67,19 @@ export class MockTelegram implements TelegramService {
     ])
   }
 
+  private seedNotes() {
+    const t = now()
+    const notes: Array<[string, number]> = [
+      ['Office wifi: GlanceGuest / password tonhub2026', 40 * 86400],
+      ["Ali's flat: Marina Gate 2, apt 1704, buzzer 17", 21 * 86400],
+      ['Gym locker code 4417', 9 * 86400],
+      ['Passport renewal appointment Jan 14, 10:30 at Amer centre', 5 * 86400],
+      ['Gift idea for Mom: the blue scarf from Dubai Mall', 2 * 86400],
+      ['Parked at Mall of the Emirates, level P2, zone F', 3 * 3600],
+    ]
+    this.notes = notes.map(([text, ago]) => ({ id: this.seq++, chatId: 'me', from: 'You', out: true, text, date: t - ago }))
+  }
+
   async start() {}
   async stop() {
     for (const t of this.timers) clearTimeout(t)
@@ -94,6 +109,25 @@ export class MockTelegram implements TelegramService {
   async markRead(chatId: string) {
     const chat = this.chats.get(chatId)
     if (chat) chat.unread = 0
+  }
+  async getNotes(limit: number): Promise<Message[]> {
+    return this.notes.slice(-limit)
+  }
+  async saveNote(text: string): Promise<Message> {
+    const msg: Message = { id: this.seq++, chatId: 'me', from: 'You', out: true, text, date: now() }
+    this.notes.push(msg)
+    return msg
+  }
+  async search(query: string, limit: number): Promise<FoundMessage[]> {
+    const q = query.toLowerCase().trim()
+    if (!q) return []
+    const out: FoundMessage[] = []
+    for (const [chatId, list] of this.messages) {
+      const title = this.chats.get(chatId)?.title ?? ''
+      for (const m of list) if (m.text.toLowerCase().includes(q)) out.push({ ...m, chatTitle: title })
+    }
+    for (const n of this.notes) if (n.text.toLowerCase().includes(q)) out.push({ ...n, chatTitle: 'Saved Messages' })
+    return out.sort((a, b) => b.date - a.date).slice(0, limit)
   }
   onMessage(fn: (m: IncomingMessage) => void) {
     this.emitter.on('msg', fn)
