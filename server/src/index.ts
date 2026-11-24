@@ -1,6 +1,7 @@
 import 'node:process'
 import { pino } from 'pino'
-import { AiService } from './ai.js'
+import { AiService, type LlmConfig } from './ai.js'
+import { type AiSettingsData, DEFAULT_AI_SETTINGS, resolveLlm } from './ai-settings.js'
 import { buildApp } from './app.js'
 import { Assistant, DEFAULT_SETTINGS, type SettingsData } from './assistant.js'
 import { loadConfig } from './config.js'
@@ -20,15 +21,17 @@ async function main() {
   const cfg = loadConfig()
   const log = pino({
     level: cfg.LOG_LEVEL,
-    redact: ['req.headers.authorization', 'password', 'code', 'phone'],
+    redact: ['req.headers.authorization', 'password', 'code', 'phone', 'apiKey', '*.apiKey'],
     ...(cfg.PRETTY_LOGS ? { transport: { target: 'pino-pretty' } } : {}),
   }) as unknown as Logger
 
-  const [sessionStore, paymentsStore, settingsStore, ratesStore] = await Promise.all([
+  const [sessionStore, paymentsStore, settingsStore, ratesStore, aiStore] = await Promise.all([
     new JsonStore<SessionData>(cfg.DATA_DIR, 'session', { telegramSession: '' }).load(),
     new JsonStore<PaymentsData>(cfg.DATA_DIR, 'payments', { requests: [], seenTx: [] }).load(),
     new JsonStore<SettingsData>(cfg.DATA_DIR, 'settings', { ...DEFAULT_SETTINGS, defaultFiat: cfg.DEFAULT_FIAT }).load(),
     new JsonStore<RatesData>(cfg.DATA_DIR, 'rates', { lastKnown: {} }).load(),
+    // The user's AI choice and API key (file mode 0600, never returned to clients).
+    new JsonStore<AiSettingsData>(cfg.DATA_DIR, 'ai', { ...DEFAULT_AI_SETTINGS, provider: cfg.LLM_BASE_URL ? 'server' : 'off' }).load(),
   ])
   if (!settingsStore.get().walletAddress && cfg.TON_WALLET_ADDRESS) {
     const addr = friendlyAddress(parseAddress(cfg.TON_WALLET_ADDRESS), cfg.TON_NETWORK)
@@ -40,10 +43,10 @@ async function main() {
     cfg.TELEGRAM_MODE === 'live'
       ? new LiveTelegram(cfg.TG_API_ID!, cfg.TG_API_HASH, sessionStore, log.child({ mod: 'telegram' }))
       : new MockTelegram()
-  const ai = new AiService(
-    cfg.LLM_BASE_URL ? { baseUrl: cfg.LLM_BASE_URL, model: cfg.LLM_MODEL, apiKey: cfg.LLM_API_KEY, timeoutMs: cfg.LLM_TIMEOUT_MS, fastMs: cfg.LLM_FAST_MS } : null,
-    log.child({ mod: 'ai' }),
-  )
+  const serverLlm: LlmConfig | null = cfg.LLM_BASE_URL
+    ? { baseUrl: cfg.LLM_BASE_URL, model: cfg.LLM_MODEL, apiKey: cfg.LLM_API_KEY, timeoutMs: cfg.LLM_TIMEOUT_MS, fastMs: cfg.LLM_FAST_MS }
+    : null
+  const ai = new AiService(resolveLlm(aiStore.get(), serverLlm), log.child({ mod: 'ai' }))
   const stt = createStt(cfg)
   void stt?.prepare?.().then(() => log.info({ stt: stt.name }, 'speech-to-text ready'))
   const rates = new RateService(log.child({ mod: 'rates' }), ratesStore)
@@ -73,11 +76,11 @@ async function main() {
 
   const app = await buildApp({
     token: cfg.APP_TOKEN, corsOrigins: cfg.CORS_ORIGINS, network: cfg.TON_NETWORK,
-    tg, ai, stt, assistant, payments, settings: settingsStore, hub, logger: log, version: VERSION,
+    tg, ai, stt, assistant, payments, settings: settingsStore, hub, logger: log, version: VERSION, aiSettings: aiStore, serverLlm,
   })
   await app.listen({ port: cfg.PORT, host: cfg.HOST })
   log.info(
-    { telegram: cfg.TELEGRAM_MODE, ai: ai.model ?? 'rules', stt: stt?.name ?? 'disabled', ton: cfg.TON_NETWORK },
+    { telegram: cfg.TELEGRAM_MODE, ai: ai.model ? `${ai.provider}:${ai.model}` : 'rules', stt: stt?.name ?? 'disabled', ton: cfg.TON_NETWORK },
     `Glance server v${VERSION} ready`,
   )
 
@@ -91,7 +94,7 @@ async function main() {
     payments.stop()
     await app.close().catch(() => {})
     await tg.stop().catch(() => {})
-    await Promise.all([sessionStore.flush(), paymentsStore.flush(), settingsStore.flush(), ratesStore.flush()])
+    await Promise.all([sessionStore.flush(), paymentsStore.flush(), settingsStore.flush(), ratesStore.flush(), aiStore.flush()])
     process.exit(0)
   }
   process.on('SIGINT', () => void shutdown('SIGINT'))

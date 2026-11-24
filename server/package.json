@@ -16,6 +16,7 @@
     "tg:login": "tsx --env-file-if-exists=.env src/cli-login.ts"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^1.13.0",
     "@fastify/cors": "^11.4.3",
     "@fastify/rate-limit": "^11.2.2",
     "@ton/core": "^0.63.1",

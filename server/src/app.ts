@@ -3,7 +3,8 @@ import cors from '@fastify/cors'
 import rateLimit from '@fastify/rate-limit'
 import Fastify, { type FastifyInstance, type FastifyRequest, LogController } from 'fastify'
 import { z, ZodError } from 'zod'
-import type { AiService } from './ai.js'
+import type { AiService, LlmConfig } from './ai.js'
+import { AiSettingsBody, type AiSettingsData, DEFAULT_AI_SETTINGS, mergeAiSettings, publicAiSettings, resolveLlm } from './ai-settings.js'
 import type { Assistant, SettingsData } from './assistant.js'
 import { badRequest, HttpError, notFound } from './lib/errors.js'
 import type { EventHub, HubEvent } from './lib/events.js'
@@ -28,6 +29,10 @@ export interface AppDeps {
   hub: EventHub
   logger?: Logger
   version?: string
+  /** The user's AI choice (provider + their own key). In memory when omitted (tests). */
+  aiSettings?: Pick<JsonStore<AiSettingsData>, 'get' | 'update'>
+  /** The model from the server's .env, used when the user picks "server". */
+  serverLlm?: LlmConfig | null
 }
 
 const TG_ERRORS: Record<string, string> = {
@@ -54,7 +59,13 @@ function safeEqual(a: string, b: string) {
   return x.length === y.length && timingSafeEqual(x, y)
 }
 
+function memoryStore<T extends object>(value: T): Pick<JsonStore<T>, 'get' | 'update'> {
+  return { get: () => value, update: async fn => { fn(value) } }
+}
+
 export async function buildApp(d: AppDeps): Promise<FastifyInstance> {
+  const aiStore = d.aiSettings ?? memoryStore<AiSettingsData>({ ...DEFAULT_AI_SETTINGS, provider: d.ai.enabled ? 'server' : 'off' })
+  const serverLlm = d.serverLlm ?? null
   const app = Fastify({
     ...(d.logger ? { loggerInstance: d.logger } : { logger: false }),
     trustProxy: true,
@@ -116,6 +127,7 @@ export async function buildApp(d: AppDeps): Promise<FastifyInstance> {
       version: d.version ?? '1.0.0',
       telegram: d.tg.status(),
       ai: d.ai.model,
+      aiProvider: d.ai.provider,
       stt: d.stt?.name ?? null,
       ton: { network: d.network, wallet: s.walletAddress || null },
       defaultFiat: s.defaultFiat,
@@ -232,6 +244,30 @@ export async function buildApp(d: AppDeps): Promise<FastifyInstance> {
     })
     return d.settings.get()
   })
+
+  // ── AI model (optional): the user's own key, the server's model, or none ──
+  const aiLimit = { config: { rateLimit: { max: 12, timeWindow: '1 minute' } } }
+  const testAi = async () => {
+    const started = Date.now()
+    const error = await d.ai.test()
+    return { ok: !error, error, ms: Date.now() - started }
+  }
+  app.get('/api/ai', async () => publicAiSettings(aiStore.get(), d.ai, serverLlm))
+  app.put('/api/ai', aiLimit, async req => {
+    const body = AiSettingsBody.parse(req.body)
+    let next: AiSettingsData
+    try {
+      next = mergeAiSettings(aiStore.get(), body)
+    } catch (err) {
+      throw badRequest((err as Error).message, 'invalid_ai_settings')
+    }
+    if (next.provider === 'server' && !serverLlm) throw badRequest('This server has no model of its own (LLM_BASE_URL is not set)', 'invalid_ai_settings')
+    await aiStore.update(s => Object.assign(s, next))
+    d.ai.configure(resolveLlm(next, serverLlm))
+    req.log.info({ provider: next.provider, model: d.ai.model }, 'AI model changed')
+    return { ...publicAiSettings(aiStore.get(), d.ai, serverLlm), test: d.ai.enabled ? await testAi() : null }
+  })
+  app.post('/api/ai/test', aiLimit, async () => (d.ai.enabled ? testAi() : { ok: false, error: 'AI is off', ms: 0 }))
 
   // ── Telegram login ───────────────────────────────────────────────────
   const loginLimit = { config: { rateLimit: { max: 5, timeWindow: '5 minutes' } } }

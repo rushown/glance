@@ -1,3 +1,5 @@
+import Anthropic from '@anthropic-ai/sdk'
+import { zodOutputFormat } from '@anthropic-ai/sdk/helpers/zod'
 import { z } from 'zod'
 import { fetchRetry } from './lib/http.js'
 import type { Logger } from './lib/logger.js'
@@ -8,14 +10,14 @@ import { type Chat, matchChats, type Message } from './telegram/types.js'
 
 export const IntentSchema = z.object({
   action: z
-    .enum(['reply', 'send_message', 'split_bill', 'request_payment', 'open_chat', 'summarize', 'summarize_channels', 'check_payments', 'check_balance', 'unknown'])
+    .enum(['reply', 'send_message', 'split_bill', 'request_payment', 'open_chat', 'summarize', 'summarize_channels', 'check_payments', 'check_balance', 'ask', 'save_note', 'brief', 'unknown'])
     .describe('What the user wants to do'),
   recipient_names: z
     .array(z.string())
-    .describe('People or chats named by the user, exactly as they would appear in the chat list. Empty for reply/summarize.'),
+    .describe('People or chats named by the user, exactly as they would appear in the chat list. For brief: the one person or chat. Empty for reply/summarize/ask/save_note.'),
   message_text: z
     .string()
-    .describe('For reply/send_message: the message to send, cleaned up (fix STT errors, punctuation), in the user\'s voice. Otherwise empty.'),
+    .describe('For reply/send_message: the message to send, cleaned up (fix STT errors, punctuation), in the user\'s voice. For ask: the question. For save_note: the note to save. Otherwise empty.'),
   amount: z.number().nullable().describe('Total amount for split_bill, or per-person amount for request_payment. Null if none.'),
   currency: z.string().nullable().describe('ISO 4217 code (AED, USD, EUR...) or "TON". Null if unspecified.'),
   include_self: z.boolean().describe('split_bill only: true if the user also pays a share (default true).'),
@@ -37,6 +39,15 @@ export type Triage = Record<string, { priority: 'urgent' | 'normal' | 'low'; sum
 
 const DigestSchema = z.object({ digest: z.string().describe('<= 280 characters, plain text, no markdown') })
 
+const AnswerSchema = z.object({
+  answer: z.string().describe('<= 280 characters, plain text, no markdown, no emoji'),
+  from_notes: z.boolean().describe('true if the answer comes from the user\'s notes or messages given'),
+})
+
+const BriefSchema = z.object({ brief: z.string().describe('<= 300 characters, plain text, short lines, no markdown') })
+
+const PingSchema = z.object({ ok: z.boolean() })
+
 const DraftsSchema = z.object({
   drafts: z.array(z.string().describe('<= 50 characters, plain text, no emoji')).describe('2 or 3 distinct reply options'),
 })
@@ -49,8 +60,24 @@ export interface CommandContext {
   defaultFiat: string
 }
 
+/**
+ * Where the model runs. `anthropic` uses the official Anthropic SDK; every
+ * other provider speaks the OpenAI-compatible /chat/completions API.
+ */
+export type AiProvider = 'openai' | 'anthropic' | 'gemini' | 'openrouter' | 'custom'
+
+export const PROVIDERS: Record<AiProvider, { label: string; baseUrl: string; model: string; keyHint: string }> = {
+  openai: { label: 'ChatGPT (OpenAI)', baseUrl: 'https://api.openai.com/v1', model: 'gpt-5-mini', keyHint: 'sk-…' },
+  anthropic: { label: 'Claude (Anthropic)', baseUrl: '', model: 'claude-opus-5-5', keyHint: 'sk-ant-…' },
+  gemini: { label: 'Gemini (Google)', baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai', model: 'gemini-2.5-flash', keyHint: 'AIza…' },
+  openrouter: { label: 'OpenRouter (any model)', baseUrl: 'https://openrouter.ai/api/v1', model: 'openai/gpt-5-mini', keyHint: 'sk-or-…' },
+  custom: { label: 'Custom (OpenAI-compatible)', baseUrl: '', model: '', keyHint: 'optional' },
+}
+
 export interface LlmConfig {
-  /** OpenAI-compatible base URL, e.g. http://localhost:11434/v1 (Ollama), https://api.groq.com/openai/v1 */
+  /** Default: an OpenAI-compatible server (Ollama, llama.cpp, vLLM, LM Studio, Groq…). */
+  provider?: AiProvider
+  /** OpenAI-compatible base URL, e.g. http://localhost:11434/v1 (Ollama). Ignored for anthropic unless set. */
   baseUrl: string
   model: string
   apiKey?: string
@@ -74,7 +101,10 @@ type Job<T> = { run: (signal: AbortSignal) => Promise<T>; resolve: (v: T) => voi
  * inbox triage.
  */
 export class AiService {
-  private readonly cfg?: Required<LlmConfig>
+  private cfg?: Required<LlmConfig>
+  private anthropic?: Anthropic
+  /** Some models (e.g. OpenAI reasoning models) reject a custom temperature; remembered after the first 400. */
+  private sendTemperature = true
   private triageCache = new Map<string, { key: string; value: Triage[string] }>()
   private draftCache = new Map<string, string[]>()
   private digestCache = new Map<string, string>()
@@ -88,9 +118,26 @@ export class AiService {
     cfg: LlmConfig | null,
     private readonly log: Logger,
   ) {
-    if (cfg?.baseUrl && cfg.model) {
-      this.cfg = { apiKey: '', timeoutMs: 45_000, fastMs: 6000, ...cfg, baseUrl: cfg.baseUrl.replace(/\/+$/, '') }
-    }
+    this.configure(cfg)
+  }
+
+  /**
+   * Switch model or provider at runtime (the user picked one on the phone).
+   * null = rules only: Glance keeps working as a plain Telegram client.
+   */
+  configure(cfg: LlmConfig | null) {
+    const provider = cfg?.provider ?? 'custom'
+    const usable = cfg && cfg.model && (provider === 'anthropic' ? Boolean(cfg.apiKey) : Boolean(cfg.baseUrl))
+    this.cfg = usable
+      ? { apiKey: '', timeoutMs: 45_000, fastMs: 6000, ...cfg, provider, baseUrl: cfg.baseUrl.replace(/\/+$/, '') }
+      : undefined
+    this.anthropic = undefined
+    this.jsonMode = 'schema'
+    this.sendTemperature = true
+    this.triageCache.clear()
+    this.draftCache.clear()
+    this.digestCache.clear()
+    this.running?.abort.abort(new Error('model changed'))
   }
 
   get enabled() {
@@ -100,6 +147,21 @@ export class AiService {
   /** Model name for status displays, or null when running on rules only. */
   get model() {
     return this.cfg?.model ?? null
+  }
+
+  get provider(): AiProvider | null {
+    return this.cfg ? this.cfg.provider : null
+  }
+
+  /** One tiny model call, to check a key and model name. Returns an error message, or null when it works. */
+  async test(): Promise<string | null> {
+    if (!this.cfg) return 'No model configured'
+    try {
+      const out = await this.structured(PingSchema, 'ping', 'Health check. Reply with {"ok": true}.', 'ping', 'hi', true)
+      return out ? null : 'The model answered, but not in the expected format'
+    } catch (err) {
+      return (err as Error).message.slice(0, 200)
+    }
   }
 
   private enqueue<T>(run: (signal: AbortSignal) => Promise<T>, priority: 'hi' | 'lo'): Promise<T> {
@@ -143,7 +205,7 @@ export class AiService {
     }
   }
 
-  private async structured<S extends z.ZodType>(schema: S, name: string, system: string, user: string, priority: 'hi' | 'lo' = 'hi'): Promise<z.infer<S> | null> {
+  private async structured<S extends z.ZodType>(schema: S, name: string, system: string, user: string, priority: 'hi' | 'lo' = 'hi', throwErrors = false): Promise<z.infer<S> | null> {
     const cfg = this.cfg
     if (!cfg) return null
     // The time limit covers waiting in the queue too.
@@ -151,6 +213,7 @@ export class AiService {
     return this.enqueue(async signal => {
       const remaining = deadline - Date.now()
       if (remaining < 1500) return null
+      if (cfg.provider === 'anthropic') return this.claude(cfg, schema, name, system, user, signal, remaining, throwErrors)
       const { $schema: _ignored, ...jsonSchema } = z.toJSONSchema(schema) as Record<string, unknown>
       const call = (mode: 'schema' | 'object') =>
         fetchRetry(`${cfg.baseUrl}/chat/completions`, {
@@ -158,7 +221,7 @@ export class AiService {
           headers: { 'Content-Type': 'application/json', ...(cfg.apiKey ? { Authorization: `Bearer ${cfg.apiKey}` } : {}) },
           body: JSON.stringify({
             model: cfg.model,
-            temperature: 0.2,
+            ...(this.sendTemperature ? { temperature: 0.2 } : {}),
             stream: false,
             messages: [
               // Small open models follow the schema far better when they also see it in the prompt.
@@ -170,13 +233,21 @@ export class AiService {
           signal: AbortSignal.any([signal, AbortSignal.timeout(remaining)]),
         })
       let res = await call(this.jsonMode)
+      if (res.status === 400 && this.sendTemperature) {
+        const text = await res.clone().text()
+        if (/temperature/i.test(text)) {
+          this.log.warn({ model: cfg.model }, 'model rejects a custom temperature, using its default')
+          this.sendTemperature = false
+          res = await call(this.jsonMode)
+        }
+      }
       if (res.status === 400 && this.jsonMode === 'schema') {
         // Some servers only support plain JSON mode; remember and retry once.
         this.log.warn({ model: cfg.model }, 'json_schema response_format rejected, using json_object')
         this.jsonMode = 'object'
         res = await call('object')
       }
-      if (!res.ok) throw new Error(`LLM HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`)
+      if (!res.ok) throw new Error(`${res.status === 401 || res.status === 403 ? 'API key rejected' : `LLM HTTP ${res.status}`}: ${(await res.text()).slice(0, 200)}`)
       const json = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> }
       const parsed = schema.safeParse(extractJson(json.choices?.[0]?.message?.content ?? ''))
       if (!parsed.success) {
@@ -187,6 +258,111 @@ export class AiService {
     }, priority)
   }
 
+  /** Claude through the official Anthropic SDK, with structured outputs validated by the same zod schema. */
+  private async claude<S extends z.ZodType>(cfg: Required<LlmConfig>, schema: S, name: string, system: string, user: string, signal: AbortSignal, remaining: number, throwErrors: boolean): Promise<z.infer<S> | null> {
+    this.anthropic ??= new Anthropic({
+      apiKey: cfg.apiKey,
+      ...(cfg.baseUrl ? { baseURL: cfg.baseUrl } : {}),
+      maxRetries: 1,
+      // The web demo runs this code in the user's own browser with the key they typed into it.
+      dangerouslyAllowBrowser: typeof window !== 'undefined',
+    })
+    try {
+      const msg = await this.anthropic.messages.parse(
+        {
+          model: cfg.model,
+          max_tokens: 16000,
+          system,
+          messages: [{ role: 'user', content: user }],
+          // Short answers for a glasses display: low effort keeps them fast.
+          output_config: { format: zodOutputFormat(schema as z.ZodType), effort: 'low' },
+        },
+        { signal, timeout: remaining },
+      )
+      if (msg.stop_reason === 'refusal') {
+        this.log.warn({ name }, 'model declined the request')
+        return null
+      }
+      const parsed = schema.safeParse(msg.parsed_output)
+      if (!parsed.success) {
+        this.log.warn({ name, issues: parsed.error.issues.slice(0, 3) }, 'model output did not match schema')
+        return null
+      }
+      return parsed.data as z.infer<S>
+    } catch (err) {
+      if (err instanceof Anthropic.AuthenticationError || err instanceof Anthropic.PermissionDeniedError) throw new Error(`API key rejected: ${err.message}`)
+      if (err instanceof Anthropic.NotFoundError) throw new Error(`Model "${cfg.model}" not found`)
+      if (throwErrors || !(err instanceof Anthropic.APIError)) throw err
+      throw new Error(`Claude API error ${err.status ?? ''}: ${err.message}`)
+    }
+  }
+
+  // ── Ask: questions answered from the user's own Telegram notes ────────
+  /**
+   * Answer a question using the user's Saved Messages and any matching
+   * messages, or general knowledge when they don't cover it. Null when no
+   * model is set or it failed: the caller then shows keyword matches.
+   */
+  async answer(question: string, notes: Pick<Message, 'text' | 'date'>[], found: Array<{ chatTitle: string; from: string; text: string }> = []): Promise<{ answer: string; fromNotes: boolean } | null> {
+    if (!this.cfg) return null
+    try {
+      const today = new Date().toISOString().slice(0, 10)
+      const out = await this.withinInteractiveLimit(this.structured(
+        AnswerSchema,
+        'answer',
+        [
+          'You are a personal assistant answering a question spoken to smart glasses. The answer is read on a tiny display.',
+          'First look in the user\'s notes (their Telegram "Saved Messages") and the matching Telegram messages given. If they answer the question, answer from them and set from_notes true.',
+          'Otherwise answer from general knowledge in one or two short sentences and set from_notes false. If it needs live data you do not have, say so briefly.',
+          'Never invent personal facts (passwords, addresses, dates) that are not in the notes or messages.',
+          `Max 280 characters. Plain text, no markdown, no emoji. Today is ${today}.`,
+        ].join('\n'),
+        [
+          `<notes>\n${notes.slice(-60).map(n => `[${new Date(n.date * 1000).toISOString().slice(0, 10)}] ${truncate(n.text, 300)}`).join('\n')}\n</notes>`,
+          found.length ? `<messages>\n${found.map(m => `${m.chatTitle} / ${m.from}: ${truncate(m.text, 200)}`).join('\n')}\n</messages>` : '',
+          `<question>${question}</question>`,
+        ].filter(Boolean).join('\n\n'),
+      ))
+      const answer = out?.answer.trim()
+      return answer ? { answer: truncate(answer, 400), fromNotes: out!.from_notes } : null
+    } catch (err) {
+      this.log.warn({ err: (err as Error).message }, 'answer failed, using keyword search')
+      return null
+    }
+  }
+
+  /** Someone is waiting on the glasses: give up on the model after 20 s (the caller then shows rule-based results). */
+  private withinInteractiveLimit<T>(work: Promise<T | null>): Promise<T | null> {
+    const limit = Math.min(this.cfg?.timeoutMs ?? 20_000, 20_000)
+    const timer = new Promise<null>(r => unref(setTimeout(() => r(null), limit)))
+    return Promise.race([work, timer])
+  }
+
+  /** A short brief on one person or chat, e.g. before meeting them. Falls back to their latest messages. */
+  async brief(chat: Pick<Chat, 'title' | 'kind'>, messages: Pick<Message, 'from' | 'out' | 'text' | 'date'>[]): Promise<string> {
+    const fallback = messages.length
+      ? messages.slice(-5).map(m => `${m.out ? 'You' : m.from.split(' ')[0]}: ${truncate(m.text, 90)}`).join('\n')
+      : `No messages with ${chat.title} yet.`
+    if (!this.cfg || !messages.length) return fallback
+    try {
+      const out = await this.withinInteractiveLimit(this.structured(
+        BriefSchema,
+        'brief',
+        [
+          `Brief the user before they talk to ${chat.title}, from their recent Telegram messages. The brief is read on smart glasses.`,
+          'Cover: what is open or was promised (by either side), any plans with dates or times, and the last thing said. Skip small talk.',
+          'Keep requests apart from things done: write "Asks you to book a table", never "Table booked", unless a message says it was done.',
+          'Short lines, max 300 characters, plain text, no markdown, no emoji. Never invent facts.',
+        ].join('\n'),
+        `<chat title="${chat.title}" kind="${chat.kind}">\n${messages.map(m => `[${new Date(m.date * 1000).toISOString().slice(0, 16).replace('T', ' ')}] ${m.out ? 'Me' : m.from}: ${truncate(m.text, 200)}`).join('\n')}\n</chat>`,
+      ))
+      if (out?.brief.trim()) return truncate(out.brief.trim(), 400)
+    } catch (err) {
+      this.log.warn({ err: (err as Error).message }, 'brief failed, showing latest messages')
+    }
+    return fallback
+  }
+
   // ── Voice command → intent ────────────────────────────────────────────
   /**
    * Clear commands ("split 240 dirhams with Ali and Sara", "who paid?") are
@@ -195,8 +371,10 @@ export class AiService {
   async parseCommand(transcript: string, ctx: CommandContext): Promise<Intent> {
     const text = transcript.trim()
     if (!text) return unknown('I did not catch that')
-    const fast = heuristicIntent(text, ctx)
+    // With a model, free-form questions go to it (it can tell "could you tell Ali…" from a real question).
+    const fast = heuristicIntent(text, ctx, { guessQuestions: !this.cfg })
     if (fast.action !== 'unknown' || !this.cfg) return fast
+    const rules = heuristicIntent(text, ctx, { guessQuestions: true })
     try {
       // The glasses show "Thinking…" meanwhile; never keep the user waiting longer than this.
       const deadline = new Promise<null>(r => unref(setTimeout(() => r(null), Math.min(this.cfg!.timeoutMs, 20_000))))
@@ -216,6 +394,9 @@ export class AiService {
           '- summarize_channels: digest of the Telegram channels and communities the user follows (news, announcements, crypto groups).',
           '- check_payments: status of outstanding payment requests.',
           "- check_balance: the user's own TON wallet balance.",
+          '- ask: a question for the assistant (facts from the user\'s own notes, like a wifi password or where they parked, or general questions). message_text = the question.',
+          '- save_note: the user wants to remember or note something. message_text = the note, cleaned up.',
+          '- brief: the user wants a brief on one person or chat before meeting or calling them. recipient_names = that one name.',
           '- unknown: anything else, with a clarification question.',
           `If the user gives an amount without currency, use ${ctx.defaultFiat}. "dirham(s)" = AED. "gram(s)" and "toncoin" = TON.`,
           'For reply/send_message, write message_text as the user would type it: natural, concise, correct punctuation. Do not add sign-offs.',
@@ -234,7 +415,7 @@ export class AiService {
     } catch (err) {
       this.log.error({ err: (err as Error).message }, 'intent parsing failed, using heuristics')
     }
-    return fast
+    return rules
   }
 
   // ── Inbox triage ──────────────────────────────────────────────────────
@@ -416,7 +597,29 @@ export function heuristicDrafts(messages: Pick<Message, 'out' | 'text'>[]): stri
   return ['Sounds good!', 'Thanks!', 'Will reply properly soon']
 }
 
-// ── Helpers & heuristics (also used when Claude is unavailable) ───────────
+// ── Notes search without a model ─────────────────────────────────────────
+
+const STOPWORDS = new Set('a an and are at be by can could did do does for from had has have how i in is it its me my of on or our than that the their them then there these this to us was we were what when where which who why will with would you your about tell show find search look up please remind know'.split(' '))
+
+/** Meaningful words of a question, longest first ("what's the office wifi password" → password, office, wifi). */
+export function keywords(question: string): string[] {
+  const words = question.toLowerCase().replace(/'s\b/g, '').split(/[^\p{L}\p{N}]+/u).filter(w => w.length >= 3 && !STOPWORDS.has(w))
+  return [...new Set(words)].sort((a, b) => b.length - a.length)
+}
+
+/** Rank notes by how many question keywords they contain (prefix match tolerates plurals: "park" ~ "parked"). */
+export function searchNotes<T extends Pick<Message, 'text' | 'date'>>(question: string, notes: T[]): T[] {
+  const keys = keywords(question)
+  if (!keys.length) return []
+  const scored = notes.map(n => {
+    const words = n.text.toLowerCase().split(/[^\p{L}\p{N}]+/u)
+    const score = keys.reduce((s, k) => s + (words.some(w => w === k) ? 1 : words.some(w => w.length >= 4 && k.length >= 4 && (w.startsWith(k.slice(0, 4)) && (w.startsWith(k) || k.startsWith(w)))) ? 0.7 : 0), 0)
+    return { n, score }
+  })
+  return scored.filter(x => x.score > 0).sort((a, b) => b.score - a.score || b.n.date - a.n.date).map(x => x.n)
+}
+
+// ── Helpers & heuristics (also used when no model is set) ────────────────
 
 export function truncate(s: string, n: number): string {
   const clean = s.replace(/\s+/g, ' ').trim()
@@ -453,7 +656,7 @@ function splitNames(s: string): string[] {
     .filter(x => x.length > 1)
 }
 
-export function heuristicIntent(text: string, ctx: CommandContext): Intent {
+export function heuristicIntent(text: string, ctx: CommandContext, opts: { guessQuestions?: boolean } = {}): Intent {
   const t = text.trim().replace(/[.!]+$/, '')
   const lower = t.toLowerCase()
   const money = lower.match(/(\d+(?:[.,]\d+)?)\s*([a-z]+)?/)
@@ -462,6 +665,14 @@ export function heuristicIntent(text: string, ctx: CommandContext): Intent {
   const note = lower.match(/\bfor ([a-z0-9 '\-]+?)(?: with| between| among|$)/)?.[1]?.trim() ?? ''
 
   let m: RegExpMatchArray | null
+  if ((m = t.match(/^(?:take a note|make a note|note(?: down)?|remember|save(?: a)? note)(?: that)?\s*[:,-]?\s+(.+)$/i)) && !/^remember (me|when|what|where|who)\b/i.test(t)) {
+    return { ...unknown(''), action: 'save_note', message_text: capitalize(m[1]!) }
+  }
+  if (/^(?:show|open|read)(?: me)? (?:my )?(?:notes|saved messages)$/i.test(t)) return { ...unknown(''), action: 'ask' }
+  if ((m = t.match(/^(?:search|look up|find)(?: in)?(?: my)?(?: notes| saved messages| telegram| chats)?(?: for)?\s+(.+)$/i))) {
+    return { ...unknown(''), action: 'ask', message_text: m[1]!.trim() }
+  }
+  if ((m = t.match(/^(?:ask(?: glance| the assistant| ai)?|hey glance)[:,]?\s+(.+)$/i))) return { ...unknown(''), action: 'ask', message_text: m[1]!.trim() }
   if ((m = lower.match(/\bsplit\b.*?\b(?:with|between|among)\s+(.+?)(?:\s+for\s+.*)?$/))) {
     return { ...unknown(''), action: 'split_bill', recipient_names: splitNames(m[1]!), amount, currency: currency ?? ctx.defaultFiat, include_self: !/\bbetween\b/.test(lower) || /\bme\b/.test(m[1]!), note }
   }
@@ -469,6 +680,10 @@ export function heuristicIntent(text: string, ctx: CommandContext): Intent {
     return { ...unknown(''), action: 'request_payment', recipient_names: splitNames(m[1]!), amount, currency: currency ?? ctx.defaultFiat, note }
   }
   if (/\b(channels?|news|communit(y|ies)|announcements?)\b/.test(lower) && /\b(summar|digest|what|catch|news|new|update)/.test(lower)) return { ...unknown(''), action: 'summarize_channels' }
+  if ((m = t.match(/^(?:brief me|prep me|catch me up|give me a brief|update me)\s+(?:on|about|for|with)\s+(.+)$/i)) || (m = t.match(/^what'?s (?:going on|new|up) with\s+(.+)$/i))) {
+    const name = m[1]!.replace(/^(?:my )?(?:meeting|call|chat) with\s+/i, '').trim()
+    if (!/^(my )?(inbox|chats|messages|everything|channels)$/i.test(name)) return { ...unknown(''), action: 'brief', recipient_names: [name] }
+  }
   if (/\b(summar|digest|what did i miss|catch me up|what'?s new)/.test(lower)) return { ...unknown(''), action: 'summarize' }
   if (/\b(balance|how much (ton|gram|money) do i have|my wallet)\b/.test(lower)) return { ...unknown(''), action: 'check_balance' }
   if (/\b(payments?|who paid|who owes|pending)\b/.test(lower)) return { ...unknown(''), action: 'check_payments' }
@@ -495,6 +710,10 @@ export function heuristicIntent(text: string, ctx: CommandContext): Intent {
   if ((m = t.match(/^(?:reply|answer|say)\s*(?:with|that)?[:,]?\s+(.+)$/i)) || ctx.currentChat) {
     const body = m ? m[1]! : t
     if (ctx.currentChat) return { ...unknown(''), action: 'reply', message_text: capitalize(body) }
+  }
+  // A question with no chat open goes to the assistant (notes first, then the model if one is set).
+  if (opts.guessQuestions !== false && !ctx.currentChat && (/\?$/.test(text.trim()) || /^(what|where|when|who|whom|which|how|why|is|are|do|does|did|can|could|should|will|would)\b/i.test(t))) {
+    return { ...unknown(''), action: 'ask', message_text: t.replace(/\?+$/, '').trim() }
   }
   return unknown('Try "reply…", "tell Ali…" or "split 90 with Sara"')
 }

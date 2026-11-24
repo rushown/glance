@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import type { AiService, Intent, Triage } from './ai.js'
-import { truncate } from './ai.js'
+import { keywords, searchNotes, truncate } from './ai.js'
 import { badRequest, notFound, unavailable } from './lib/errors.js'
 import type { Logger } from './lib/logger.js'
 import type { JsonStore } from './lib/store.js'
@@ -26,6 +26,7 @@ export interface Target {
 
 export type Plan =
   | { id: string; kind: 'send'; title: string; body: string; targets: Target[]; text: string }
+  | { id: string; kind: 'note'; title: string; body: string; targets: Target[]; text: string }
   | {
       id: string
       kind: 'payment_request'
@@ -182,6 +183,22 @@ export class Assistant {
         return { type: 'info', title: 'Payments', body: await this.paymentsReport() }
       case 'check_balance':
         return { type: 'info', title: 'Wallet', body: await this.walletReport() }
+      case 'ask':
+        return { type: 'info', ...(await this.ask(intent.message_text)) }
+      case 'save_note': {
+        const text = intent.message_text.trim()
+        if (!text) return { type: 'clarify', body: 'What should I note? e.g. "note: gym locker 4417"' }
+        return {
+          type: 'confirm',
+          plan: this.remember({ id: randomUUID(), kind: 'note', title: 'Save to Saved Messages', body: text, targets: [{ chatId: 'me', title: 'Saved Messages' }], text }),
+        }
+      }
+      case 'brief': {
+        const { targets } = this.resolve(intent.recipient_names.slice(0, 1), chats)
+        const t = targets[0]
+        if (!t) return { type: 'clarify', body: intent.recipient_names[0] ? `Couldn't find "${intent.recipient_names[0]}"` : 'Brief on whom? e.g. "brief me on Ali"' }
+        return { type: 'info', title: `Brief · ${t.title}`, body: await this.brief(t.chatId) }
+      }
       default:
         return { type: 'clarify', body: intent.clarification || 'Sorry, I did not get that' }
     }
@@ -230,6 +247,10 @@ export class Assistant {
     if (!entry || entry.expires < Date.now()) throw notFound('This action expired, please try again')
     this.plans.delete(planId) // single use: a double-tap can never send twice
     const { plan } = entry
+    if (plan.kind === 'note') {
+      await this.tg.saveNote(plan.text)
+      return { title: 'Saved', body: 'Saved to your Telegram Saved Messages.\nAsk me about it any time.' }
+    }
     if (plan.kind === 'send') {
       const sent: string[] = []
       const failed: string[] = []
@@ -307,6 +328,49 @@ export class Assistant {
       this.remember({ id: randomUUID(), kind: 'send', title: `Reply to ${chat.title}`, body: text, targets: [{ chatId, title: chat.title }], text }),
     )
     return { plans, source }
+  }
+
+  // ── Ask & brief ───────────────────────────────────────────────────────
+  /**
+   * Answer from the user's own Telegram: Saved Messages first, then
+   * Telegram's search across chats. With a model set, it reads those and
+   * answers in a sentence (or from general knowledge); without one, the
+   * matching notes and messages themselves are the answer.
+   */
+  async ask(question: string): Promise<{ title: string; body: string }> {
+    const q = question.trim()
+    const notes = await this.tg.getNotes(100).catch(err => {
+      this.log.warn({ err: (err as Error).message }, 'could not read Saved Messages')
+      return []
+    })
+    if (!q) {
+      if (!notes.length) return { title: 'Notes', body: 'No notes yet.\nSay "note: …" to save one to Telegram Saved Messages.' }
+      return { title: 'Notes', body: notes.slice(-6).reverse().map(n => `- ${truncate(n.text, 100)}`).join('\n') }
+    }
+    const hits = searchNotes(q, notes).slice(0, 3)
+    // Telegram's own search, with the most specific word of the question.
+    const key = keywords(q)[0]
+    const found = key && hits.length < 2
+      ? (await this.tg.search(key, 8).catch(() => [])).filter(m => m.chatId !== 'me' && this.inFocus(m.chatId)).slice(0, 4)
+      : []
+    if (this.ai.enabled) {
+      const r = await this.ai.answer(q, notes, found.map(m => ({ chatTitle: m.chatTitle, from: m.from, text: m.text })))
+      if (r) return { title: r.fromNotes ? 'From your notes' : 'Answer', body: r.answer }
+    }
+    if (hits.length) return { title: 'From your notes', body: hits.map(n => `- ${truncate(n.text, 120)}`).join('\n') }
+    if (found.length) return { title: 'Found in Telegram', body: found.slice(0, 3).map(m => `${truncate(m.chatTitle, 20)}: ${truncate(m.text, 100)}`).join('\n') }
+    return {
+      title: 'No match',
+      body: `Nothing in your notes or chats about "${truncate(q, 40)}".\nSave one with "note: …".${this.ai.enabled ? '' : '\nFor general questions, add an AI key on the phone.'}`,
+    }
+  }
+
+  /** Recent conversation with one person, summarized (or the latest lines without a model). */
+  async brief(chatId: string): Promise<string> {
+    const chat = await this.tg.getChat(chatId)
+    if (!chat) throw notFound('Chat not found')
+    const messages = await this.tg.getMessages(chatId, 25)
+    return this.ai.brief(chat, messages)
   }
 
   // ── Info ──────────────────────────────────────────────────────────────
