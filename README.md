@@ -4,7 +4,7 @@
 
 **[▶ Try the live demo](https://useglanceapp.pages.dev)** (runs in your browser, no install) · Demo video: _add link_ · Built for the DoraHacks *Heads Up: Even Realities* hackathon
 
-Glance is an Even Hub app for Even Realities G2 glasses. It turns your real Telegram account into a heads-up inbox ranked by urgency. You can reply with one tap by approving an AI-drafted reply, or say your own. All AI is **free and open source, running on your own server**: an open LLM through Ollama and Whisper for speech. No paid AI API is needed. It also lets you split a bill with friends in TON in one sentence: each friend gets a payment link in Telegram, Glance watches the chain, and **PAID** appears on your glasses when the money arrives.
+Glance is an Even Hub app for Even Realities G2 glasses. It turns your real Telegram account into a heads-up inbox ranked by urgency. You can reply with one tap by approving an AI-drafted reply, or say your own. Ask it anything ("what's the office wifi password?") and it answers from your own Telegram **Saved Messages**. **The AI is optional and your choice:** a free open model on your own server (Ollama), your own **ChatGPT, Claude, Gemini or OpenRouter** key pasted in the phone app, or none at all, in which case Glance is a plain Telegram client with rule-based replies and keyword search. Speech-to-text is open-source Whisper. It also lets you split a bill with friends in TON in one sentence: each friend gets a payment link in Telegram, Glance watches the chain, and **PAID** appears on your glasses when the money arrives.
 
 > **Track:** 01 · Messaging & News (Telegram), also entered for **Best Telegram integration**.
 > TON payments go through standard `ton://` links that open Gram Wallet or any TON wallet, on **testnet** by default. Glance never holds funds.
@@ -28,6 +28,10 @@ Glance is an Even Hub app for Even Realities G2 glasses. It turns your real Tele
 | **Split a bill / request money** in any currency | Live TON exchange rate → unique payment code per friend → `ton://transfer` link (Gram Wallet or any TON wallet) sent via Telegram |
 | **Payment received** alerts | Server matches incoming on-chain transfers by comment code and amount → live push to the glasses |
 | **"What did I miss?"** | LLM digest of unread conversations |
+| **Ask**: "What's the office wifi password?", "Where did I park?" | Searches your Telegram **Saved Messages**, then Telegram's own search across chats. With AI on, the model answers in one sentence from those (or from general knowledge). Without AI, the matching notes are the answer |
+| **Take a note**: "Note: gym locker 4417" | Saved to your Telegram Saved Messages after you confirm, so it syncs to every device and Ask can find it later |
+| **Brief me on Ali** (before a meeting or call) | With AI: what's open, promised and planned with that person. Without AI: their last few messages |
+| **Bring your own AI** (optional) | Phone → Setup → AI assistant: Off, the server's open model, ChatGPT, Claude, Gemini, OpenRouter, or any OpenAI-compatible URL. Save runs a test call and shows the result |
 | Live notifications | New urgent messages flash in the header |
 
 **Safety rules:** nothing is ever sent without an explicit confirmation on the glasses. Plans are stored on the server and can be used only once, so a double-tap can't send twice and the client can't change recipients or amounts.
@@ -43,7 +47,8 @@ glance/
 │   └── src/demo/           web demo: runs the server's modules in the browser when no server is set
 ├── server/                 Fastify API (Node 22)
 │   ├── src/telegram/       live (gramjs MTProto) and mock Telegram
-│   ├── src/ai.ts           open-LLM triage, drafts, intents, digests + rule fallbacks
+│   ├── src/ai.ts           AI providers, triage, drafts, intents, digests, ask, briefs + rule fallbacks
+│   ├── src/ai-settings.ts  the user's AI choice and key (stored on the server, never returned)
 │   ├── src/assistant.ts    commands, plans (confirm-before-send), bill splitting
 │   ├── src/payments.ts     payment requests + on-chain matcher
 │   ├── src/ton.ts          rates, ton:// links, toncenter
@@ -83,7 +88,7 @@ VITE_SERVER_URL= VITE_APP_TOKEN= npx vite build   # keep both empty: the build i
 | | Web demo | Your own server |
 |---|---|---|
 | Chats | Built-in sample chats | Your real Telegram account (MTProto) |
-| Triage and reply drafts | Rules | Open LLM (Ollama), with rules as a fallback |
+| Triage, drafts, ask, briefs | Rules and keyword search, or your own AI key (kept in that browser tab only) | Your choice: open LLM (Ollama), your ChatGPT / Claude / Gemini / OpenRouter key, or rules |
 | Voice | Not available | Whisper speech-to-text |
 | Payments | Live TON rate, `ton://` links on testnet, demo friends "pay" | Real on-chain matching against your wallet |
 | Runs on | Your browser | Your machine or VPS |
@@ -108,7 +113,10 @@ In the emulator, **↑ ↓** scroll, **Enter** taps, **Esc** double-taps and **S
 ## Production setup
 
 1. **Telegram**: create an app at <https://my.telegram.org> → set `TELEGRAM_MODE=live`, `TG_API_ID` and `TG_API_HASH`. Log in from the phone UI (phone → code → 2FA), or run `npm run tg:login` on the server.
-2. **AI (free, open source):** `docker compose up` starts **Ollama** with `qwen2.5:3b`, and nothing else is needed. Any OpenAI-compatible endpoint works through `LLM_BASE_URL` / `LLM_MODEL` (llama.cpp server, vLLM, LM Studio, or Groq's free tier for speed). Leave `LLM_BASE_URL` empty to run on rules only.
+2. **AI (optional):** pick it in the phone app under **Setup → AI assistant**:
+   - **This server's model** (free, open source): `docker compose up` starts **Ollama** with `qwen2.5:3b`. Any OpenAI-compatible endpoint works through `LLM_BASE_URL` / `LLM_MODEL` (llama.cpp server, vLLM, LM Studio, Groq).
+   - **Your own key**: ChatGPT (default `gpt-5-mini`), Claude (official Anthropic SDK, default `claude-opus-5-5` at low effort), Gemini (`gemini-2.5-flash`), OpenRouter (any model), or a custom OpenAI-compatible URL. You can change the model name. The key is stored in `DATA_DIR/ai.json` (mode 0600) on your server and is never sent back to the phone or the glasses.
+   - **Off**: Glance runs on Telegram alone, with rule-based drafts, keyword search of Saved Messages, and the latest messages as briefs.
 3. **Voice (free, open source):** `docker compose up` starts **speaches** (faster-whisper, `Systran/faster-whisper-small`) with no key. Alternatives: whisper.cpp server, or Groq `whisper-large-v3-turbo`. The G2 has no speaker, so Glance needs no text-to-speech.
 4. **TON**: set `TON_NETWORK=mainnet` and `TON_WALLET_ADDRESS` (or paste the address in the phone UI). `TONCENTER_API_KEY` is optional and raises rate limits.
 5. **Deploy the server** somewhere with HTTPS:
@@ -158,6 +166,8 @@ A typical reply takes three taps: open the chat, pick a draft, tap **Send**. Not
 
 - Bearer-token auth with constant-time comparison. The token is redacted from logs, and the only route that accepts it in the URL is the live-update stream, because EventSource can't send headers.
 - Rate limits: global, voice, and login (5 attempts / 5 min). Every input is validated with zod. Body size is capped (60 s of audio).
+- Privacy of your contacts: by default (Off or the server's own model) no message leaves your server. If you pick a cloud provider (ChatGPT, Claude, Gemini, OpenRouter), snippets of the chats Glance reads (including what your contacts wrote) and your notes are sent to that provider to write drafts, summaries and answers. The phone app says so where you pick a provider. What goes to the model: inbox triage and digests cover only your focus chats (all chats if none are picked), Ask searches your notes and your focus chats, drafts and briefs use only the chat you open or name, and voice commands send chat names (not messages) so it can tell who you mean. Glance itself stores no messages.
+- AI keys: stored only on your own server (`ai.json`, mode 0600), redacted from logs, and never returned by the API (the phone sees `…last4`). In the web demo, a key stays in that browser tab's memory and goes only to the provider you picked.
 - Telegram session and data files are written atomically with mode 0600. The container runs as non-root with a healthcheck.
 - Exchange rates: tonapi → CoinGecko → last known rate (<24 h, kept across restarts).
 - Payment matching is idempotent: a transaction is never counted twice, underpayments (<98%) are rejected, and each request has its own code.
@@ -168,7 +178,7 @@ A typical reply takes three taps: open the chat, pick a draft, tap **Send**. Not
 ## Tests
 
 ```bash
-cd server && npm test     # 44 tests: API end-to-end, split → on-chain match, drafts, focus chats, channel digest, balance
+cd server && npm test     # 58 tests: API end-to-end, split → on-chain match, drafts, focus chats, channel digest, balance, ask/notes/briefs, AI providers and key handling
 cd app && npm test        # 14 tests: every glasses page validated with the SDK's own validator, 63-byte limits, emoji, VAD
 
 # Official simulator, scriptable (screenshots of the real 576×288 framebuffer):
@@ -184,7 +194,7 @@ Record the simulator window next to the phone UI (`npm run simulate` + `http://l
 1. **0:00 Problem (15 s).** "I check Telegram 80 times a day. Most of the time I need one line, not my phone."
 2. **0:15 Inbox (25 s).** The glasses open on a triaged inbox: urgent first, with one line per chat. A new message flashes in the header.
 3. **0:40 Read and write (35 s).** Tap *Product Team* → tap → three AI drafts → pick "Yes, on it" → **Send**. Then hold, say *"Tell Ali I booked Al Fanar for 8"*, and confirm.
-4. **1:15 Focus and digest (25 s).** On the phone, tick only *Product Team* and *Ali*: the inbox shrinks to those chats. Then *Channel digest*: two lines of news, with the promo channel skipped.
+4. **1:15 Focus, digest and ask (25 s).** On the phone, tick only *Product Team* and *Ali*: the inbox shrinks to those chats. Then *Channel digest*: two lines of news, with the promo channel skipped. Say *"What's the office wifi password?"*: the answer comes from your Saved Messages.
 5. **1:40 Money (40 s).** *"Split 240 dirhams with Ali and Sara for dinner"* → AED and TON per person → **Send requests**. Show Ali's Telegram message with the `ton://` link (testnet). He pays → **■ PAID · Ali sent 23.36 TON** on the glasses, with the testnet transaction open in tonviewer.
 6. **2:20 Safety and setup (20 s).** Nothing is sent without a tap. The server is self-hosted with your own Telegram session, the demo runs on testnet, and Glance holds no funds.
 7. **2:40 Close.** *"Telegram where your eyes already are."*
@@ -192,8 +202,9 @@ Record the simulator window next to the phone UI (`npm run simulate` + `http://l
 ## Prior work and hackathon rules
 
 - A first prototype of Glance (server, glasses controller and phone UI) was written on **Nov 19–21, 2026, before build week (Nov 23)**, as allowed by the rules ("say in your README what existed before Nov 23"). Every commit dated before Nov 23 is that pre-existing work. Everything after it was built during the hackathon, commit by commit.
-- Open-source libraries used: gramjs (Telegram MTProto), Fastify, zod, @ton/core, buffer, Even Hub SDK, CLI and simulator. Open models: Qwen 2.5 via Ollama, Whisper via speaches / faster-whisper.
-- Only apps listed in the entered track are used: **Telegram**. The AI is self-hosted open source (Ollama + Whisper), not a third-party app. Payments use the wallet-agnostic `ton://` standard, so they open Gram Wallet.
+- Built during the hackathon (Nov 23 onward, in commits dated from Nov 23): optional bring-your-own AI (ChatGPT, Claude, Gemini, OpenRouter, custom), Ask from Telegram Saved Messages, voice notes saved to Saved Messages, "brief me on …", and their tests.
+- Open-source libraries used: gramjs (Telegram MTProto), Fastify, zod, @ton/core, buffer, @anthropic-ai/sdk, Even Hub SDK, CLI and simulator. Open models: Qwen 2.5 via Ollama, Whisper via speaches / faster-whisper.
+- Apps used: **Telegram** (track 01). The optional AI providers ChatGPT, Claude and OpenRouter are apps listed in track 04 (AI Assistants & Work). Gemini and custom endpoints are optional extras, and by default the AI is self-hosted open source (Ollama + Whisper). Payments use the wallet-agnostic `ton://` standard, so they open Gram Wallet.
 - Money safety: testnet by default, read-only balance, and no custody. Glance only asks friends to pay *your own* wallet. No API keys are in the repo (`.env` files are git-ignored).
 
 ## Feature requests (for the teams behind the APIs)
