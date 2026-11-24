@@ -2,13 +2,15 @@ import type { Controller, ControllerState } from '../glasses/controller'
 import type { Api } from '../lib/api'
 import { type Glasses, H, type MirrorFrame, W } from '../lib/glasses'
 import { fitBytes, forGlasses } from '../lib/text'
-import type { ChatSummary, PaymentRequest, Settings, Status, WalletInfo } from '../lib/types'
+import type { AiSettings, ChatSummary, PaymentRequest, Settings, Status, WalletInfo } from '../lib/types'
 
 const $ = <T extends HTMLElement = HTMLElement>(root: ParentNode, sel: string) => root.querySelector<T>(sel)!
 
 function esc(s: string) {
   return s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!)
 }
+
+const PROVIDER_NAMES: Record<string, string> = { openai: 'ChatGPT', anthropic: 'Claude', gemini: 'Gemini', openrouter: 'OpenRouter' }
 
 const short = (addr: string) => (addr.length > 14 ? `${addr.slice(0, 6)}…${addr.slice(-6)}` : addr)
 
@@ -31,7 +33,9 @@ type Tab = 'payments' | 'focus' | 'setup'
 
 const EXAMPLES = [
   'What did I miss?',
-  "What's new in my channels?",
+  "What's the office wifi password?",
+  'Note: gym locker 4417',
+  'Brief me on Ali',
   'Tell Ali I booked Al Fanar for 8pm',
   'Split 240 dirhams with Ali and Sara for dinner',
   'Who paid?',
@@ -57,8 +61,8 @@ export function mountPhoneUi(root: HTMLElement, d: PhoneDeps) {
 
     <aside class="demo-banner" id="demo-banner" role="note" hidden>
       <span class="demo-tag">Demo</span>
-      <p><b>This is a demo.</b> It runs entirely in your browser with sample chats and rule-based replies. No Telegram account, no AI model, no real money.
-      For the real thing, run Glance locally with free open LLM models (Ollama + Whisper), or deploy the server and connect it under <button type="button" class="link" id="demo-setup">Setup</button>.</p>
+      <p><b>This is a demo.</b> It runs entirely in your browser with sample chats and rule-based replies. No Telegram account, no real money.
+      To try the AI features, add your own ChatGPT, Claude, Gemini or OpenRouter key under <button type="button" class="link" id="demo-setup">Setup</button> (it stays in this tab). For the real thing, connect your own Glance server there.</p>
     </aside>
 
     <div class="cols">
@@ -140,6 +144,22 @@ export function mountPhoneUi(root: HTMLElement, d: PhoneDeps) {
                   <button class="primary">Save</button>
                 </div>
               </form>
+            </li>
+            <li class="step" id="step-ai">
+              <div class="step-head"><span class="num">4</span><h3>AI assistant <span class="sub">optional</span></h3><span class="state" id="ai-state"></span></div>
+              <ul class="ai-modes">
+                <li><b>Without AI</b> Glance is a plain Telegram client: rule-based replies, keyword search of your Saved Messages, latest messages as briefs.</li>
+                <li><b>With AI</b> it writes reply drafts, ranks your inbox, summarizes, and answers questions from your notes in a sentence.</li>
+              </ul>
+              <form id="ai" class="fields" autocomplete="off">
+                <select name="provider" aria-label="AI provider"></select>
+                <input name="key" type="password" placeholder="API key" spellcheck="false" aria-label="API key" autocomplete="off" />
+                <input name="model" placeholder="Model" spellcheck="false" aria-label="Model name" />
+                <input name="url" type="url" placeholder="Base URL, e.g. http://127.0.0.1:11434/v1" spellcheck="false" aria-label="Base URL" />
+                <button class="primary">Save and test</button>
+              </form>
+              <p class="note" id="ai-note"></p>
+              <p class="ai-result" id="ai-result" aria-live="polite"></p>
             </li>
           </ol>
           <dl class="specs" id="specs"></dl>
@@ -256,10 +276,11 @@ export function mountPhoneUi(root: HTMLElement, d: PhoneDeps) {
     setState('server-state', Boolean(status), d.api.demo ? 'Web demo' : status ? 'Connected' : d.api.configured ? 'Unreachable' : 'Not set')
     setState('tg-state', tg?.state === 'ready', !tg ? '—' : tg.mode === 'mock' ? 'Demo account' : tg.state === 'ready' ? 'Signed in' : 'Sign in')
     setState('wallet-state', Boolean(settings?.walletAddress), settings?.walletAddress ? short(settings.walletAddress) : 'Not set')
+    setState('ai-state', Boolean(status?.ai), status?.ai ? esc(status.ai) : 'Off')
     const open = [!status, tg?.state !== 'ready', !settings?.walletAddress].filter(Boolean).length
     $(root, '#todo').textContent = open ? String(open) : ''
     $(root, '#specs').innerHTML = status
-      ? `<div><dt>AI</dt><dd>${status.ai ? `${esc(status.ai)} (open model)` : 'Rules only (set LLM_BASE_URL)'}</dd></div>
+      ? `<div><dt>AI</dt><dd>${status.ai ? `${esc(status.ai)}${status.aiProvider && status.aiProvider !== 'custom' ? ` · ${esc(PROVIDER_NAMES[status.aiProvider] ?? status.aiProvider)}` : ''}` : 'Off (Telegram only)'}</dd></div>
          <div><dt>Voice</dt><dd>${status.stt ? esc(status.stt) : 'Off (set STT_BASE_URL)'}</dd></div>
          <div><dt>TON</dt><dd>${status.ton.network}</dd></div>
          <div><dt>Server</dt><dd class="mono">v${esc(status.version)}</dd></div>`
@@ -329,6 +350,89 @@ export function mountPhoneUi(root: HTMLElement, d: PhoneDeps) {
       renderSetup()
       await loadWallet()
       notify(settings.walletAddress ? 'Wallet saved' : 'Wallet removed')
+    })
+  })
+
+  // ── AI assistant ─────────────────────────────────────────────────────
+  const aiForm = $<HTMLFormElement>(root, '#ai')
+  const aiSel = aiForm.elements.namedItem('provider') as HTMLSelectElement
+  const aiKey = field(aiForm, 'key')
+  const aiModel = field(aiForm, 'model')
+  const aiUrl = field(aiForm, 'url')
+  const aiResult = $(root, '#ai-result')
+  let ai: AiSettings | null = null
+  const renderAiFields = () => {
+    const p = ai?.providers.find(x => x.id === aiSel.value)
+    const saved = ai?.provider === aiSel.value
+    aiKey.hidden = !p
+    aiModel.hidden = !p
+    aiUrl.hidden = !p?.needsUrl
+    if (p) {
+      aiKey.placeholder = saved && ai?.hasKey ? `Saved key ${ai.keyHint} (leave empty to keep)` : p.needsKey ? `API key (${p.keyHint})` : 'API key (optional)'
+      aiModel.placeholder = p.model ? `Model (default ${p.model})` : 'Model name'
+      if (!saved) { aiModel.value = ''; aiUrl.value = '' }
+    }
+    const notes: Record<string, string> = {
+      off: 'Glance works fully without AI.',
+      server: `Uses the model on your Glance server${ai?.serverModel ? ` (${esc(ai.serverModel)})` : ''}. Free and private.`,
+      custom: 'Any OpenAI-compatible server: Ollama, LM Studio, llama.cpp, vLLM, Groq…',
+    }
+    $(root, '#ai-note').innerHTML = notes[aiSel.value]
+      ?? (d.api.demo
+        ? 'Web demo: your key stays in this browser tab only (gone on reload) and goes only to the provider you picked. Usage is billed to your own account.'
+        : 'Your key is stored only on your Glance server and is never shown again or sent to the glasses. Usage is billed to your own account. <b>Privacy:</b> with a cloud provider, snippets of your chats (including what your contacts wrote) and your notes are sent to that provider to write drafts and answers. Use focus chats to limit which chats the AI reads, or pick this server\'s model to keep everything on your server.')
+  }
+  const renderAi = () => {
+    if (!ai) return
+    const opts = [
+      `<option value="off">Off (Telegram only)</option>`,
+      ai.serverModel ? `<option value="server">This server's model (${esc(ai.serverModel)})</option>` : '',
+      ...ai.providers.map(p => `<option value="${p.id}">${esc(p.label)}</option>`),
+    ]
+    aiSel.innerHTML = opts.join('')
+    aiSel.value = ai.provider === 'server' && !ai.serverModel ? 'off' : ai.provider
+    aiKey.value = ''
+    aiModel.value = ai.model
+    aiUrl.value = ai.baseUrl
+    renderAiFields()
+  }
+  const loadAi = async () => {
+    $(root, '#step-ai').hidden = !d.api.configured
+    if (!d.api.configured) return
+    try {
+      ai = await d.api.aiSettings()
+      renderAi()
+    } catch {
+      // Older servers have no /api/ai: hide the step rather than show an error.
+      $(root, '#step-ai').hidden = true
+    }
+  }
+  aiSel.addEventListener('change', () => { aiResult.textContent = ''; renderAiFields() })
+  aiForm.addEventListener('submit', e => {
+    e.preventDefault()
+    aiResult.className = 'ai-result'
+    aiResult.textContent = aiSel.value === 'off' ? '' : 'Testing…'
+    void guard(aiForm.querySelector('button'), async () => {
+      try {
+        ai = await d.api.saveAi({
+          provider: aiSel.value as AiSettings['provider'],
+          ...(aiKey.value.trim() ? { apiKey: aiKey.value.trim() } : {}),
+          model: aiModel.value.trim(),
+          baseUrl: aiUrl.value.trim(),
+        })
+      } catch (err) {
+        aiResult.textContent = ''
+        throw err
+      }
+      renderAi()
+      const t = ai.test
+      aiResult.className = `ai-result ${!t || t.ok ? 'ok' : 'err'}`
+      aiResult.textContent = !ai.active ? 'AI is off. Glance runs on Telegram alone.'
+        : t?.ok ? `Working: ${ai.active.model} answered in ${(t.ms / 1000).toFixed(1)} s.`
+          : `Saved, but the test failed: ${t?.error ?? 'unknown error'}`
+      status = await d.api.status()
+      renderSetup()
+      notify(ai.active ? `AI: ${ai.active.model}` : 'AI turned off', t && !t.ok ? 'err' : 'ok')
     })
   })
 
@@ -466,7 +570,7 @@ export function mountPhoneUi(root: HTMLElement, d: PhoneDeps) {
       field(walletForm, 'wallet').value = settings.walletAddress
       field(walletForm, 'fiat').value = settings.defaultFiat
       $(root, '#server-info').textContent = ''
-      await Promise.all([loadPayments(), loadWallet()])
+      await Promise.all([loadPayments(), loadWallet(), loadAi()])
     } catch (err) {
       status = null
       renderTg(undefined)

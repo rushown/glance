@@ -4,6 +4,7 @@
 // real server; see the README.
 import './shims/buffer-global'
 import { AiService } from '@server/ai.js'
+import { AiSettingsBody, DEFAULT_AI_SETTINGS, mergeAiSettings, publicAiSettings, resolveLlm } from '@server/ai-settings.js'
 import { Assistant, DEFAULT_SETTINGS } from '@server/assistant.js'
 import { EventHub } from '@server/lib/events.js'
 import { HttpError } from '@server/lib/errors.js'
@@ -55,6 +56,8 @@ export class DemoBackend {
   private readonly hub = new EventHub()
   private readonly tg = new MockTelegram()
   private readonly ai = new AiService(null, log)
+  /** The visitor's own AI key: kept in this tab's memory only, sent only to the provider they picked. */
+  private aiSettings: any = { ...DEFAULT_AI_SETTINGS, provider: 'off' }
   private readonly settings = new MemoryStore({ ...DEFAULT_SETTINGS, walletAddress: DEMO_WALLET })
   private readonly toncenter = new TonCenter(NETWORK, '')
   // Demo payments are marked paid when a friend replies; polling the chain is just a slow backstop.
@@ -119,7 +122,7 @@ export class DemoBackend {
 
     if (at('GET', 'status')) {
       const s = d.settings.get()
-      return { version: '1.0.0-web-demo', telegram: d.tg.status(), ai: null, stt: null, ton: { network: NETWORK, wallet: s.walletAddress || null }, defaultFiat: s.defaultFiat }
+      return { version: '1.0.0-web-demo', telegram: d.tg.status(), ai: d.ai.model, aiProvider: d.ai.provider, stt: null, ton: { network: NETWORK, wallet: s.walletAddress || null }, defaultFiat: s.defaultFiat }
     }
     if (at('GET', 'inbox')) return { chats: await d.assistant.inbox(Math.min(20, Number(q.get('limit')) || 12)) }
     if (at('GET', 'chats')) {
@@ -183,6 +186,30 @@ export class DemoBackend {
         if (Array.isArray(body.focusChatIds)) s.focusChatIds = [...new Set(body.focusChatIds.map(String))].slice(0, 50)
       })
       return { ...d.settings.get() }
+    }
+    if (at('GET', 'ai')) return { ...publicAiSettings(d.aiSettings, d.ai, null) }
+    if (at('PUT', 'ai')) {
+      const parsed = AiSettingsBody.safeParse(body)
+      if (!parsed.success || parsed.data.provider === 'server') throw new HttpError(400, 'Pick a provider', 'invalid_ai_settings')
+      try {
+        d.aiSettings = mergeAiSettings(d.aiSettings, parsed.data)
+      } catch (err) {
+        throw new HttpError(400, (err as Error).message, 'invalid_ai_settings')
+      }
+      d.ai.configure(resolveLlm(d.aiSettings, null))
+      let test = null
+      if (d.ai.enabled) {
+        const started = Date.now()
+        const error = await d.ai.test()
+        test = { ok: !error, error: error && /fetch|network|cors/i.test(error) ? `${error} (this provider may block calls from a browser; run a Glance server instead)` : error, ms: Date.now() - started }
+      }
+      return { ...publicAiSettings(d.aiSettings, d.ai, null), test }
+    }
+    if (at('POST', 'ai', 'test')) {
+      if (!d.ai.enabled) return { ok: false, error: 'AI is off', ms: 0 }
+      const started = Date.now()
+      const error = await d.ai.test()
+      return { ok: !error, error, ms: Date.now() - started }
     }
     if (method === 'POST' && p[0] === 'telegram') return d.tg.status()
     if (at('POST', 'demo', 'incoming')) { d.tg.receive(String(body.chatId), String(body.text ?? '').slice(0, 500)); return { ok: true } }

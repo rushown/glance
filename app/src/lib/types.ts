@@ -25,7 +25,7 @@ export interface Message {
 
 export interface Plan {
   id: string
-  kind: 'send' | 'payment_request'
+  kind: 'send' | 'payment_request' | 'note'
   title: string
   body: string
   targets: { chatId: string; title: string }[]
@@ -42,6 +42,8 @@ export interface Status {
   telegram: { mode: 'live' | 'mock'; state: string; me?: string; error?: string; passwordHint?: string }
   /** Open model name served by the LLM endpoint, or null when running on rules. */
   ai: string | null
+  /** Who serves the model: openai, anthropic, gemini, openrouter, custom (null = rules only). */
+  aiProvider?: string | null
   stt: string | null
   ton: { network: 'mainnet' | 'testnet'; wallet: string | null }
   defaultFiat: string
@@ -76,6 +78,26 @@ export interface Settings {
   walletAddress: string
   defaultFiat: string
   focusChatIds: string[]
+}
+
+export type AiProviderId = 'openai' | 'anthropic' | 'gemini' | 'openrouter' | 'custom'
+
+export interface AiSettings {
+  provider: 'off' | 'server' | AiProviderId
+  model: string
+  baseUrl: string
+  hasKey: boolean
+  keyHint: string
+  active: { provider: string; model: string } | null
+  serverModel: string | null
+  providers: Array<{ id: AiProviderId; label: string; model: string; keyHint: string; needsKey: boolean; needsUrl: boolean }>
+  test?: AiTest | null
+}
+
+export interface AiTest {
+  ok: boolean
+  error: string | null
+  ms: number
 }
 
 export interface WalletInfo {

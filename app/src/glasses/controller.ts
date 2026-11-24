@@ -182,7 +182,7 @@ export class Controller {
           { act: 'payments' },
         ]
         const items = this.actions.map(a =>
-          a.act === 'voice' ? '▶ Speak a command'
+          a.act === 'voice' ? '▶ Speak: ask, note, reply, split'
             : a.act === 'chat' ? inboxLabel(a.chat)
               : a.act === 'payments' ? '■ Payments & wallet'
                 : a.act === 'digest' ? '▶ Catch me up'
@@ -215,8 +215,8 @@ export class Controller {
       case 'working':
         return { texts: [hdr('GLANCE'), body('Working…')], capture: 'body' }
       case 'confirm': {
-        const text = s.plan.kind === 'send' ? `“${s.plan.body}”` : s.plan.body
-        const items = s.plan.kind === 'send' ? ['Send', 'Cancel'] : ['Send requests', 'Cancel']
+        const text = s.plan.kind === 'payment_request' ? s.plan.body : `“${s.plan.body}”`
+        const items = s.plan.kind === 'send' ? ['Send', 'Cancel'] : s.plan.kind === 'note' ? ['Save note', 'Cancel'] : ['Send requests', 'Cancel']
         return {
           texts: [hdr(clip(s.plan.title, 40)), body(paginate(text, 6)[0] ?? '', 168)],
           list: { name: 'choice', x: 0, y: 206, w: W, h: H - 206, items },
@@ -391,7 +391,7 @@ export class Controller {
     const hint = this.recorder.speechDetected ? 'Got it… pause when done' : 'Speak now'
     const examples = this.screen.name === 'listening' && this.screen.chatId
       ? 'e.g. "On my way, 10 minutes"'
-      : 'e.g. "Tell Ali I booked the table"\n"Split 240 dirhams with Ali and Sara"\n"What did I miss?"'
+      : 'e.g. "Tell Ali I booked the table"\n"What\'s the office wifi password?"\n"Note: gym locker 4417" · "Brief me on Ali"'
     return `${hint}   0:${String(secs).padStart(2, '0')}\n${levelBar(this.recorder.level)}\n\n${examples}`
   }
 
@@ -487,7 +487,7 @@ export class Controller {
   }
 
   private async execute(plan: Plan, back: Back) {
-    const token = await this.working(back, plan.kind === 'send' ? 'Sending…' : 'Sending payment requests…')
+    const token = await this.working(back, plan.kind === 'send' ? 'Sending…' : plan.kind === 'note' ? 'Saving…' : 'Sending payment requests…')
     try {
       const res = await this.api.execute(plan.id)
       for (const t of plan.targets) this.drafts.delete(t.chatId)

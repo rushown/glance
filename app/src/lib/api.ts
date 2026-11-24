@@ -1,4 +1,4 @@
-import type { ChatSummary, CommandResult, InboxItem, Message, PaymentRequest, Plan, ServerEvent, Settings, Status, WalletInfo } from './types'
+import type { AiSettings, AiTest, ChatSummary, CommandResult, InboxItem, Message, PaymentRequest, Plan, ServerEvent, Settings, Status, WalletInfo } from './types'
 
 export class ApiError extends Error {
   constructor(readonly status: number, readonly code: string, message: string) {
@@ -89,6 +89,10 @@ export class Api {
   demoIncoming = (chatId: string, text: string) => this.req<{ ok: boolean }>('POST', '/api/demo/incoming', { chatId, text })
   settings = () => this.req<Settings>('GET', '/api/settings')
   saveSettings = (s: Partial<Settings>) => this.req<Settings>('PUT', '/api/settings', s)
+  aiSettings = () => this.req<AiSettings>('GET', '/api/ai')
+  saveAi = (s: { provider: AiSettings['provider']; apiKey?: string; model?: string; baseUrl?: string }) =>
+    this.req<AiSettings>('PUT', '/api/ai', s, { timeoutMs: 45_000 })
+  testAi = () => this.req<AiTest>('POST', '/api/ai/test', {}, { timeoutMs: 45_000 })
   tgRequestCode = (phone: string) => this.req<Status['telegram']>('POST', '/api/telegram/login/request-code', { phone })
   tgCode = (code: string) => this.req<Status['telegram']>('POST', '/api/telegram/login/code', { code })
   tgPassword = (password: string) => this.req<Status['telegram']>('POST', '/api/telegram/login/password', { password })

@@ -196,15 +196,22 @@ h3 { font-size: 16px; font-weight: 600; margin: 0; letter-spacing: -0.01em; }
 .note { margin: 0 0 10px; font-size: 13.5px; color: var(--ink-2); }
 .fields { display: flex; flex-direction: column; gap: 8px; }
 .fields.inline { flex-direction: row; align-items: center; }
-.fields input, .cur input {
+.fields input, .fields select, .cur input {
   width: 100%; min-width: 0; background: var(--field); border: 1px solid transparent; border-radius: 11px;
   padding: 10px 12px; outline: none; font-size: 15px; transition: border-color .15s, background-color .15s;
 }
-.fields input:focus, .cur input:focus { border-color: var(--ink); background: transparent; }
+.fields select { appearance: none; color: inherit; font: inherit; background-image: linear-gradient(45deg, transparent 50%, currentColor 50%), linear-gradient(135deg, currentColor 50%, transparent 50%); background-position: calc(100% - 18px) 50%, calc(100% - 13px) 50%; background-size: 5px 5px; background-repeat: no-repeat; padding-right: 34px; }
+.fields input:focus, .fields select:focus, .cur input:focus { border-color: var(--ink); background: transparent; }
 .cur { display: flex; align-items: center; gap: 10px; flex: 1; font-size: 13.5px; color: var(--ink-2); }
 .cur input { width: 76px; text-transform: uppercase; font-family: var(--mono); }
 .primary { background: var(--accent); color: var(--on-accent); font-weight: 600; padding: 10px 18px; border-radius: 11px; white-space: nowrap; }
 .fields > .primary { align-self: flex-start; }
+.step-head .sub { display: inline; margin-left: 6px; font-weight: 400; }
+.ai-result { margin: 10px 0 0; font-size: 13.5px; }
+.ai-result.ok { color: var(--ok); }
+.ai-result.err { color: var(--err, #c0392b); }
+.ai-modes { margin: 0 0 10px; padding: 0; list-style: none; font-size: 13px; color: var(--ink-2); display: grid; gap: 4px; }
+.ai-modes b { color: var(--ink); font-weight: 600; }
 .specs { margin: 6px 0 0; padding-top: 16px; border-top: 1px solid var(--line); display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 20px; }
 .specs:empty { display: none; }
 .specs dt { font-size: 12px; color: var(--dim); }
